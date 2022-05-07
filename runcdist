@@ -82,15 +82,16 @@ main()
    test "$tag" != "" -a "${#items[@]}" -eq 0 && { echo "Can't choose tags and not specify them."; usage; }
 
    if test "$tag" != ""; then
-      test "$(cdist inventory list -H $tag "${items[@]}")" = "" && {
-         echo "No hosts match specified tags."; exit 1; }
-      alltags=( $(cdist inventory list | sed -n "s/.* //; s/,/\n/gp" | sort -u ) )
+      test "$(cdist inventory list -H $tag "${items[@]}")" = "" && { echo "No hosts match specified tags."; exit 1; }
+      alltags=( $(cdist inventory list | sed 's/.* //; s/,/\n/gp' | sort -u ) )
       ok=1
       for item in "${items[@]}"; do
          [[ ! " ${alltags[*]} " =~ " ${item} " ]] && { echo "Tag $item not found."; ok=0; }
       done
       test "$ok" -ne 1 && exit 1
    fi
+
+   test "${#items[*]}" -eq 0 -a "$all" == "-A" && items=( $(cdist inventory list -H) )
 
    CDISTACTION=$CONFIGTYPE cdist config -c ~cdist/config \
       "${options[@]}" $all $tag ${items[*]}
