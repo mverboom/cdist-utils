@@ -89,7 +89,7 @@ inventory() {
             ;;
             esac
          done
-         test "$tag" != "" && echo "$tag" >> $CDIST_INVENTORY/$host
+         test "$tag" != "" && echo "$tag" >> $TMPDIR/$host
       done
    done
 }
@@ -99,10 +99,9 @@ main() {
    test "$CDIST_INVENTORY" = "" && { echo "CDIST_INVENTORY not set, aborting."; exit 1; }
    test -f $CFG || { echo "Can't read configfile $CFG, aborting."; exit; }
 
-   parse_config
+   TMPDIR="$(mktemp -d)"
 
-   rm -rf $CDIST_INVENTORY
-   mkdir -p $CDIST_INVENTORY
+   parse_config
 
    for folder in $CDIST_EXPLORE/*; do
       if test -d $folder; then
@@ -110,6 +109,13 @@ main() {
          inventory $host
       fi
    done
+
+   trap '' 2
+   rm -rf $CDIST_INVENTORY/*
+   cp $TMPDIR/* $CDIST_INVENTORY/
+   rm -rf $TMPDIR
+   trap 2
+
    return 0
 }
 
