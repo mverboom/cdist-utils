@@ -61,6 +61,39 @@ include() {
    fi
 }
 
+# Safe include function for manifests including other manifests, once per host
+include_once() {
+   local i dir include_manifest=''
+
+   test "$CDISTACTION" = "" -a -e "${__manifest}/${MANIFESTALL}/${1}" && return 0
+
+   if test $(basename "${1}") == $(basename "${__cdist_manifest}"); then
+      echo "ERROR: The init manifest itself cannot be included"
+      exit 1
+   fi
+
+   for dir in ${__manifest}/ $(ls -d ${__manifest}/*/); do
+      if test -e "${dir}${1}"; then
+         include_manifest="${dir}${1}"
+         break
+      fi
+   done
+
+   for i in "${SOURCESTACKONCE[@]}"; do
+      if test "${i}" == "${include_manifest}"; then
+         echo "INFO: Already included ${1} during this run, not including again"
+         return 0
+      fi
+   done
+
+   if ! test -z "${include_manifest}"; then
+      SOURCESTACKONCE+=("${include_manifest}")
+      CDISTSOURCE "$include_manifest"
+   else
+      return 1
+   fi
+}
+
 # parse configuration file
 include_cfg() {
    local repo="$1"; shift
@@ -73,7 +106,7 @@ include_cfg() {
       test "$1" == "--init" && { init=1; shift; }
       key="$1"
       for i in ${!_includedirs[*]}; do
-         test -f "${_includedirs[$i]}/${key}" && { 
+         test -f "${_includedirs[$i]}/${key}" && {
             _cfgfile="${_includedirs[$i]}/${key}"; break; }
          test "$init" = "1" && unset '_includedirs[i]'
       done
