@@ -13,6 +13,7 @@ usage() {
    echo "  <hosts>            Name of host or hosts to run cdist on"
    echo "  <tags>             Name of tag or tags to select hosts to run cdist on"
    echo "  -c <.cdistrc>      Source the <.cdistrc> file, set to ${main[cdistrc]}"
+   echo "  -m                 Mail result (mail address must be configured in config)."
    echo "  -v                 Run verbose (more increases verbosity, default warning and error)"
    echo "  -q                 Quiet (disable warning and error messages)"
    echo "  -p                 Run in parrallel (set to ${main[parrallel]})"
@@ -49,12 +50,13 @@ main() {
    CDISTARGS=( "$0" "$@" )
    export CDISTDEBUG=0
    verbose=0
+   mail=0
 
    readconfig
 
    options=( "--remote-copy" "scp -q" "--remote-exec" "ssh -x -oPermitLocalCommand=no -oClearAllForwardings=yes -oRemoteCommand=none -oRequestTTY=no -q -oForwardAgent=no" )
 
-   while getopts :hvqpPtTo:dalLxc: opt; do
+   while getopts :hmvqpPtTo:dalLxc: opt; do
       case $opt in
       h) usage
       ;;
@@ -73,6 +75,8 @@ main() {
       T) tag="-t"
       ;;
       o) CONFIGTYPE="$OPTARG"
+      ;;
+      m) test "${main[mail]}" != "" && mail=1 || { echo "Mail address is not specified in config."; usage; }
       ;;
       a) all="-A"
       ;;
@@ -125,13 +129,17 @@ main() {
       done
       test "$ok" -ne 1 && exit 1
    fi
+   test "$mail" -eq 1 && { 
+      mailfile=$(mktemp)
+      exec 5>&1 &> "$mailfile"
+   }
    for step in "${prerunindex[@]}"; do
       test "$verbose" -gt 0 && echo "Running \"${prerun[$step]}\""
       out=$( eval "${prerun[$step]}" 2>&1 )
       ret="$?"
       test "$ret" -ne 0 && echo "\"${prerun[$step]}\" returned $ret with output: $out"
    done
-   CDISTACTION="$CONFIGTYPE" cdist config -c "$CDIST_CONFIG_DIR" "${options[@]}" $all $tag "${items[@]}"
+   CDISTACTION="$CONFIGTYPE" cdist config -c "$CDIST_CONFIG_DIR" "${options[@]}" $all $tag "${items[@]}" 2>&1
    CDISTRET="$?"
    for step in "${postrunindex[@]}"; do
       test "$verbose" -gt 0 && echo "Running \"${postrun[$step]}\""
@@ -139,6 +147,12 @@ main() {
       ret="$?"
       test "$ret" -ne 0 && echo "\"${postrun[$step]}\" returned $ret with output: $out"
    done
+   test "$mail" -eq 1 && {
+      exec 1>&5
+      test "$CDISTRET" -eq 0 && subject="Runcdist output (ok)" || subject="Runcdist output (errors)"
+      mail -s "$subject" ${main[mail]} < "$mailfile"
+      rm -f "$mailfile"
+   }
    return $CDISTRET
 }
 
