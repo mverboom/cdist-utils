@@ -40,6 +40,7 @@ readconfig() {
           declare -g -A "$section[$var]=$val"
       fi
    done < <(grep -v "^#" $CFG)
+   test "${#prerun[*]}" -gt 0 && mapfile -d '' prerunindex < <(printf '%s\0' "${!prerun[@]}" | sort -z)
    test "${#postrun[*]}" -gt 0 && mapfile -d '' postrunindex < <(printf '%s\0' "${!postrun[@]}" | sort -z)
 }
 
@@ -124,6 +125,12 @@ main() {
       done
       test "$ok" -ne 1 && exit 1
    fi
+   for step in "${prerunindex[@]}"; do
+      test "$verbose" -gt 0 && echo "Running \"${prerun[$step]}\""
+      out=$( eval "${prerun[$step]}" 2>&1 )
+      ret="$?"
+      test "$ret" -ne 0 && echo "\"${prerun[$step]}\" returned $ret with output: $out"
+   done
    CDISTACTION="$CONFIGTYPE" cdist config -c "$CDIST_CONFIG_DIR" "${options[@]}" $all $tag "${items[@]}"
    CDISTRET="$?"
    for step in "${postrunindex[@]}"; do
