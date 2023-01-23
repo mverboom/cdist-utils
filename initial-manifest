@@ -38,6 +38,14 @@ include() {
       fi
    done
 
+   if test "${2}" = 'once'; then
+      for i in "${SOURCESTACKONCE[@]}"; do
+         if test "${i}" == "${include_manifest}"; then
+            return 0
+         fi
+      done
+   fi
+
    # reset SOURCESTACK when this function is called from a new manifest
    if [[ ! " ${SOURCESTACK[*]} " =~ " ${manifest} " ]]; then
       SOURCESTACK=("${manifest}")
@@ -55,10 +63,17 @@ include() {
 
    if ! test -z "${include_manifest}"; then
       SOURCESTACK+=("${include_manifest}")
+      SOURCESTACKONCE+=("${include_manifest}")
       CDISTSOURCE "$include_manifest"
    else
       return 1
    fi
+}
+
+# Safe include function for manifests including other manifests, once per host
+include_once() {
+   include "${1}" once
+   return "$?"
 }
 
 # parse configuration file
@@ -73,7 +88,7 @@ include_cfg() {
       test "$1" == "--init" && { init=1; shift; }
       key="$1"
       for i in ${!_includedirs[*]}; do
-         test -f "${_includedirs[$i]}/${key}" && { 
+         test -f "${_includedirs[$i]}/${key}" && {
             _cfgfile="${_includedirs[$i]}/${key}"; break; }
          test "$init" = "1" && unset '_includedirs[i]'
       done
