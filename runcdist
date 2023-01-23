@@ -149,7 +149,14 @@ main() {
    done
    test "$mail" -eq 1 && {
       exec 1>&5
-      test "$CDISTRET" -eq 0 && subject="Runcdist output (ok)" || subject="Runcdist output (errors)"
+      if test "$CDISTRET" -eq 0; then
+         subject="Runcdist output (ok)"
+      else
+         cp "$mailfile" /tmp/backup
+         count=$(sed -n "/^ERROR:.*Failed to configure the following hosts:/ {s/^ERROR.*: \(.*\)$/\1/; s/ /\n/g;p}" "$mailfile" | wc -l)
+         subject="Runcdist output ($count hosts failed)"
+      fi
+
       mail -s "$subject" ${main[mail]} < "$mailfile"
       rm -f "$mailfile"
    }
