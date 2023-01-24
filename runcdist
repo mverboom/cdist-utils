@@ -152,9 +152,9 @@ main() {
       if test "$CDISTRET" -eq 0; then
          subject="Runcdist output (ok)"
       else
-         cp "$mailfile" /tmp/backup
-         count=$(sed -n "/^ERROR:.*Failed to configure the following hosts:/ {s/^ERROR.*: \(.*\)$/\1/; s/ /\n/g;p}" "$mailfile" | wc -l)
-         subject="Runcdist output ($count hosts failed)"
+         readarray hosts < <(sed -n "/^ERROR:.*Failed to configure the following hosts:/ {s/^ERROR.*: \(.*\)$/\1/; s/ /\n/g;p}" "$mailfile")
+         subject="Runcdist output (${#hosts[@]} hosts failed)"
+         echo -e "Hosts that failed:\n$(printf "* %s\n" ${hosts[@]})\n\n$(cat "$mailfile")" > "$mailfile"
       fi
 
       mail -s "$subject" ${main[mail]} < "$mailfile"

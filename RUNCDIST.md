@@ -28,6 +28,9 @@ Run the configuration of hosts in parallel.
 `-P`
 Timestamp log messages with the current local date and time in the format: YYYYMMDDHHMMSS.us.
 
+`-m`
+Mail the result of the command to the email address specified in the configuration file.
+
 `-o <manifest>`
 Overrule running any generic manifest and only run the specified manifest.
 
@@ -75,10 +78,18 @@ with the -p option. Setting parrallel will override this.
 The default cdistrc file is `~/.cdistrc`. Setting this option will use the value as the
 default cdistrc file to source.
 
+`mail`
+
+This option points to a mail address. This option is used when the -m commandline option is in effect.
+
+`[prerun]`
 `[postrun]`
 
+These sections can be used to specify commands that need to be run before or after
+each cdist action.
+
 Item name can be arbitrary and will be sorted. The value of each item will be treated as
-a command that will be run after the main cdist run. There are variables that can optionally
+a command that will be run. There are variables that can optionally
 be used in the commands:
 `$CDISTRET`: The return value of the cdist command
 `${CDISTARGS[]}': Array of the options the runcdist command was started with
