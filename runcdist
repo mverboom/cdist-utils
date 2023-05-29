@@ -151,6 +151,7 @@ main() {
       exec 1>&5
       if test "$CDISTRET" -eq 0; then
          subject="Runcdist output (ok)"
+         echo "Runcdist returned no errors." > "$mailfile"
       else
          readarray hosts < <(sed -n "/^ERROR:.*Failed to configure the following hosts:/ {s/^ERROR.*: \(.*\)$/\1/; s/ /\n/g;p}" "$mailfile")
          subject="Runcdist output (${#hosts[@]} hosts failed)"
