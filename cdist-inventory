@@ -60,9 +60,9 @@ inventory() {
                fi
                if test -e  "$MANUALCFG/$explorer"; then
                   if test "$neg" = 0; then
-                     grep "$host" $MANUALCFG/$explorer > /dev/null 2>&1 && tag="${tag}${value}"
+                     grep "^$host" $MANUALCFG/$explorer > /dev/null 2>&1 && tag="${tag}${value}"
                   else
-                     grep "$host" $MANUALCFG/$explorer > /dev/null 2>&1 || tag="${tag}${value}"
+                     grep "^$host" $MANUALCFG/$explorer > /dev/null 2>&1 || tag="${tag}${value}"
                   fi
                fi
             ;;
