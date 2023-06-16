@@ -54,7 +54,7 @@ main() {
 
    readconfig
 
-   options=( "--remote-copy" "scp -q" "--remote-exec" "ssh -x -oPermitLocalCommand=no -oClearAllForwardings=yes -oRemoteCommand=none -oRequestTTY=no -q -oForwardAgent=no" )
+   options=( "--remote-copy" "scp -O -q" "--remote-exec" "ssh -x -oPermitLocalCommand=no -oClearAllForwardings=yes -oRemoteCommand=none -oRequestTTY=no -q -oForwardAgent=no" )
 
    while getopts :hmvqpPtTo:dalLxc: opt; do
       case $opt in
