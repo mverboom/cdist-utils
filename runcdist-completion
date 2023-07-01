@@ -1,0 +1,29 @@
+#/usr/bin/env bash
+#
+# runcdist completion
+
+_runcdist_completions() {
+   local cur prev prev2 opts pref
+   cur="${COMP_WORDS[COMP_CWORD]}"
+   prev="${COMP_WORDS[COMP_CWORD-1]}"
+   prev2="${COMP_WORDS[COMP_CWORD-2]}"
+   opts="-c -m -v -q -p -P -o -t -T -l -L -a -d -x"
+
+   if [[ $cur == -* && ( $prev == -* || $prev2 == -* ) ]]; then
+      COMPREPLY=( $(compgen -W "${opts}" -- ${cur} ) )
+   elif [[ ${prev} == -o ]]; then
+      test "${cur//,/}" != "${cur}" && pref="${cur%,*},"
+      COMPREPLY=( $(compgen -W "$(find $CDIST_CONFIG_DIR/manifest -printf "%f\n" | sed "s/^/$pref/")" -- ${cur} ) )
+   elif [[ ${prev} == -c ]]; then
+      COMPREPLY=( )
+   elif [[ " ${COMP_WORDS[@]} " =~ " -t " || 
+           " ${COMP_WORDS[@]} " =~ " -T " ||
+           " ${COMP_WORDS[@]} " =~ " -l " ||
+           " ${COMP_WORDS[@]} " =~ " -L "  ]]; then
+      COMPREPLY=( $(compgen -W "$(cdist inventory list | sed -n "s/.* //; s/,/\n/gp" | sort -u)" -- ${cur} ) )
+   else
+      COMPREPLY=( $(compgen -W "$(cdist inventory list -H)" -- ${cur} ) )
+   fi
+}
+
+complete -F _runcdist_completions runcdist
