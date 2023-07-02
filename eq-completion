@@ -1,0 +1,40 @@
+#/usr/bin/env bash
+_eq_completions() {
+   local cur prev prev2 opts pref oper logic
+   cur="${COMP_WORDS[COMP_CWORD]}"
+   prev="${COMP_WORDS[COMP_CWORD-1]}"
+   prev2="${COMP_WORDS[COMP_CWORD-2]}"
+   opts="-h -t -T -H -r"
+   oper=( gt ge lt le = contains )
+   logic=( and or )
+   local explore
+   explore=( $(ls $CDIST_EXPLORE/$(hostname --fqdn)) )
+
+   if [[ $cur == -* && ( $prev == -* || $prev2 == -* ) ]]; then
+      COMPREPLY=( $(compgen -W "${opts}" -- ${cur} ) )
+   elif [[ ${prev} == -t || ${prev} == -T ]]; then
+      test "${cur//,/}" != "${cur}" && pref="${cur%,*},"
+      COMPREPLY=( $(compgen -W "$(cdist inventory list | sed -n "s/.* //; s/,/\n/gp" | sed "s/^/$pref/" | sort -u)" -- ${cur} ) ) 
+   elif [[ ${prev} == -H ]]; then
+      COMPREPLY=( $(compgen -W "$(cdist inventory list -H)" -- ${cur} ) )
+   elif [[ ${prev} == -r ]]; then
+      test "${cur//,/}" != "${cur}" && pref="${cur%,*},"
+      COMPREPLY=( $(compgen -W "$(ls $CDIST_EXPLORE/$(hostname --fqdn) | sed "s/^/$pref/") " -- "${cur}" ) )
+   elif [[ ${prev} == ] ]]; then
+      COMPREPLY=( $(compgen -W "${logic[*]}" -- "${cur}" ) )
+   elif [[ " ${logic[@]} " =~ " ${prev} " ]]; then
+      COMPREPLY=( '[' )
+   elif [[ ${prev} == \[ ]]; then
+      COMPREPLY=( $(compgen -W "${explore[*]}" -- "${cur}" ) )
+   elif [[ " ${explore[@]} " =~ " ${prev} " &&
+           ${prev2} != "-r" ]]; then
+      COMPREPLY=( $(compgen -W "${oper[*]}" -- "${cur}" ) )
+   elif [[ " ${oper[@]} " =~ " ${prev} " ]]; then
+      COMPREPLY=( )
+   elif [[ " ${oper[@]} " =~ " ${prev2} " ]]; then
+      COMPREPLY=( ']' )
+   else
+      COMPREPLY=( $(compgen -W "${explore[*]}" -- "${cur}" ) )
+   fi
+}
+complete -F _eq_completions eq
