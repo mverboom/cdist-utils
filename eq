@@ -72,7 +72,7 @@ getexpr() {
 }
 
 numexpr() {
-   local res=$(echo "$1 $2 $3" | bc)
+   local res=$(echo "$1 $2 $3" | bc 2> /dev/null)
    test "$res" = "0" && return 0 || return 1
 }
 
@@ -199,14 +199,42 @@ main() {
          test "$?" -eq 1 && reshosts+=( "$host" )
       done
    fi
-
    for host in "${reshosts[@]}"; do
-      result=()
+      declare +n result
+      unset result
+      declare -n result
+      hash=r$(echo "$host" | md5sum | cut -d ' ' -f 1)
+      declare -A "$hash"
+      result="$hash"
       for report in "${reporting[@]}"; do
-         result+=( "$(procexplore "$host" "$report")" )
+         result[${report/:*/}]="$(procexplore "$host" "$report")"
       done
-      echo "${result[@]}"
    done
+
+   echo "["
+   for host in "${reshosts[@]}"; do
+      echo "{ \"hostname\": \"$host\","
+      declare +n result
+      unset result
+      declare -n result
+      hash=r$(echo "$host" | md5sum | cut -d ' ' -f 1)
+      result=$hash
+      for explore in "${!result[@]}"; do
+         echo -n "\"${explore}\": \"${result[$explore]}\""
+      done
+      echo "},"
+   done
+   echo "]"
+
+   #declare -A result
+   #for host in "${reshosts[@]}"; do
+   #   result=()
+   #   for report in "${reporting[@]}"; do
+   #      #result+=( "$(procexplore "$host" "$report")" )
+   #      result[${report/:*/}]="$(procexplore "$host" "$report")"
+   #   done
+   #   echo "${result[@]}"
+   #done
 }
 
 main "$@"
