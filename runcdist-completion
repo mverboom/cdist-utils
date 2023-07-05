@@ -16,10 +16,10 @@ _runcdist_completions() {
       COMPREPLY=( $(compgen -W "$(find $CDIST_CONFIG_DIR/manifest -printf "%f\n" | sed "s/^/$pref/")" -- ${cur} ) )
    elif [[ ${prev} == -c ]]; then
       COMPREPLY=( )
-   elif [[ "${COMP_WORDS[@]}" =~ -.*t.* || 
-           "${COMP_WORDS[@]}" =~ -.*T.* ||
-           "${COMP_WORDS[@]}" =~ -.*l.* ||
-           "${COMP_WORDS[@]}" =~ -.*L.* ]]; then
+   elif [[ "${COMP_WORDS[@]}" =~ -[^[:space:]]*t.* || 
+           "${COMP_WORDS[@]}" =~ -[^[:space:]]*T.* ||
+           "${COMP_WORDS[@]}" =~ -[^[:space:]]*l.* ||
+           "${COMP_WORDS[@]}" =~ -[^[:space:]]*L.* ]]; then
       COMPREPLY=( $(compgen -W "$(cdist inventory list | sed -n "s/.* //; s/,/\n/gp" | sort -u)" -- ${cur} ) )
    else
       COMPREPLY=( $(compgen -W "$(cdist inventory list -H)" -- ${cur} ) )
