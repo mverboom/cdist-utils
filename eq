@@ -56,6 +56,7 @@ getexpr() {
    while test $pos -lt ${#ex[@]} -a ${#items[@]} -ne 3; do
       case "${ex[$pos]}" in
          [) pos=$(( pos + 1 ))
+            test "${ex[$pos]}" = "]" && break
             getexpr "$host"
             items+=( $? )
             ;;
@@ -65,8 +66,9 @@ getexpr() {
       pos=$(( pos + 1 ))
    done
    # ToDo: verify if 0 or 1
+   test "${#items[@]}" -eq 0 && return 1
    test "${#items[@]}" -eq 1 && return ${items[0]}
-   test "${#items[@]}" -ne 3 && { echo "Invalid expression: ${items[@]}"; exit 1; }
+   test "${#items[@]}" -ne 3 && { echo "Invalid expression: ${items[@]} ${#items[@]}"; exit 1; }
    evaluate "$host" "${items[@]}"
    return $?
 }
@@ -119,6 +121,7 @@ usage() {
    echo " -t <tags>             Comma seperated list of host tags, any of which should match."
    echo " -T <tags>             Comma seperated list of host tags, all of which should match."
    echo " -j                    Output in json."
+   echo " -w                    Output in html."
    echo
    echo "Query"
    echo "The query consists of expressions which can be combined with logical operators."
@@ -155,11 +158,12 @@ main() {
    reporting=()
    DEBUG=0
    output=basic
-   while getopts :hjH:t:T:r:x opt; do
+   while getopts :hjwH:t:T:r:x opt; do
       case $opt in
       h) usage ;;
       H) hosts+=( ${OPTARG//,/ } ) ;;
       j) output=json ;;
+      w) output=html ;;
       x) DEBUG=1 ;;
       r) reporting=( ${OPTARG//,/ } ) ;;
       t) tags+=( ${OPTARG//,/ } ); tagall=0 ;;
@@ -211,20 +215,67 @@ main() {
       done
    done
 
-   echo "["
-   for host in "${reshosts[@]}"; do
-      echo "{ \"hostname\": \"$host\","
-      declare +n result
-      unset result
-      declare -n result
-      hash=r$(echo "$host" | md5sum | cut -d ' ' -f 1)
-      result=$hash
-      for explore in "${!result[@]}"; do
-         echo -n "\"${explore}\": \"${result[$explore]}\""
+   case "$output" in
+   basic)
+      for host in "${reshosts[@]}"; do
+         echo -n "$host "
+         declare +n result
+         unset result
+         declare -n result
+         hash=r$(echo "$host" | md5sum | cut -d ' ' -f 1)
+         result=$hash
+         for explore in "${!result[@]}"; do
+            echo -n "${result[$explore]} "
+         done
+         echo
       done
-      echo "},"
-   done
-   echo "]"
+   ;;
+   json)
+      echo "["
+      hostfirst=1
+      for host in "${reshosts[@]}"; do
+         test "$hostfirst" -eq 0 && echo -n ", " || hostfirst=0
+         echo "{ \"hostname\": \"$host\","
+         declare +n result
+         unset result
+         declare -n result
+         hash=r$(echo "$host" | md5sum | cut -d ' ' -f 1)
+         result=$hash
+         expfirst=1
+         for explore in "${!result[@]}"; do
+            test "$expfirst" -eq 0 && echo -n ", " || expfirst=0
+            echo -n "\"${explore}\": \"${result[$explore]}\""
+         done
+         echo "}"
+      done
+      echo "]"
+   ;;
+   html)
+      echo "<table border=1>"
+      hostfirst=1
+      for host in "${reshosts[@]}"; do
+         declare +n result
+         unset result
+         declare -n result
+         hash=r$(echo "$host" | md5sum | cut -d ' ' -f 1)
+         result=$hash
+         if test "$hostfirst" -eq 1; then
+            echo -n "<tr><th>hostname</th>"
+            for explore in "${!result[@]}"; do
+               echo -n "<th>${explore}</th>"
+            done
+            echo "</tr>"
+            hostfirst=0
+         fi
+         echo -n "<tr><td>$host</td>"
+         for explore in "${!result[@]}"; do
+            echo -n "<td>${result[$explore]}</td>"
+         done
+         echo "</tr>"
+      done
+      echo "</table>"
+   ;;
+   esac
 
    #declare -A result
    #for host in "${reshosts[@]}"; do
