@@ -138,13 +138,13 @@ usage() {
    echo "Supported logical operators between expressions:"
    echo "   and       both are true"
    echo "   or        either or are true"
-   echo "Expression always need to be grouped with brackets, no precedence is applied."
+   echo "Expression always need to be grouped with square brackets, no precedence is applied."
    echo
    echo "Examples:"
    echo "Show hostname and kernel if distr explorer is debian:"
    echo "  $0 -r hostname,kernel distr == debian"
    echo "Show fqnd and IPv4 address for all debian systems with more than 1 cpu core:"
-   echo "  $0 -r fqdn,ipv4 \( distr == debian \) and \( cpu_cores gt 1 \)"
+   echo "  $0 -r fqdn,ipv4 [ distr == debian ] and [ cpu_cores gt 1 ]"
    echo "Show hostname of all systems that have bluez installed as package:"
    echo "  $0 -r hostname packages contains bluez"
    exit 1
@@ -218,7 +218,6 @@ main() {
    case "$output" in
    basic)
       for host in "${reshosts[@]}"; do
-         echo -n "$host "
          declare +n result
          unset result
          declare -n result
@@ -276,16 +275,6 @@ main() {
       echo "</table>"
    ;;
    esac
-
-   #declare -A result
-   #for host in "${reshosts[@]}"; do
-   #   result=()
-   #   for report in "${reporting[@]}"; do
-   #      #result+=( "$(procexplore "$host" "$report")" )
-   #      result[${report/:*/}]="$(procexplore "$host" "$report")"
-   #   done
-   #   echo "${result[@]}"
-   #done
 }
 
 main "$@"
