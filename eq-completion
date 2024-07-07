@@ -12,12 +12,12 @@ _eq_completions() {
 
    if [[ $cur == -* && ( $prev == -* || $prev2 == -* ) ]]; then
       COMPREPLY=( $(compgen -W "${opts}" -- ${cur} ) )
-   elif [[ ${prev} == -t || ${prev} == -T ]]; then
+   elif [[ $pref == -* && ( ${prev} =~ -.*t.* || ${prev} =~ -.*T.* ) ]]; then
       test "${cur//,/}" != "${cur}" && pref="${cur%,*},"
       COMPREPLY=( $(compgen -W "$(cdist inventory list | sed -n "s/.* //; s/,/\n/gp" | sed "s/^/$pref/" | sort -u)" -- ${cur} ) ) 
-   elif [[ ${prev} == -H ]]; then
+   elif [[ $prev == -* && ${prev} =~ H ]]; then
       COMPREPLY=( $(compgen -W "$(cdist inventory list -H)" -- ${cur} ) )
-   elif [[ ${prev} == -r ]]; then
+   elif [[ $prev == -* && ${prev} =~ r ]]; then
       test "${cur//,/}" != "${cur}" && pref="${cur%,*},"
       COMPREPLY=( $(compgen -W "$(ls $CDIST_EXPLORE/$(hostname --fqdn) | sed "s/^/$pref/") " -- "${cur}" ) )
    elif [[ ${prev} == ] ]]; then
