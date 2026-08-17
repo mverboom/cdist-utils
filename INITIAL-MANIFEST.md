@@ -54,6 +54,35 @@ If the `CDISTACTION` variable isn't set, generic manifests are sourced. I prefer
 to keep things split out so I don't have to edit the initial manifest, but it
 is an option to include multiple manifests in the initial one.
 
+# SUPPORT FUNCTIONS
+
+There are a couple of support functions included in the initial manifest to aid
+in efficiently implementing manifests.
+
+`include_cfg`
+
+This function allows for key lookups in in directories and generates a list of
+files that have been found.
+
+Usage:
+
+`include_cfg <directory files to include> <key to look for> <directories to search (may be multiple)>`
+
+The directories to search are searched in the order in which they are specified. Earch directory is checked
+for a file with the name specified as the key. As soon as a file is found further searching will be stopped.
+The file that has been found will be read. Each line will be read and processed. The file can contain two
+types of lines:
+* Start character @
+* Start character !
+
+When a line start with the character @, the text following it will be used to search file with that name
+in the list of supplied directories to search. The contents of that will will be added to those already
+found.
+When a line start with the character !, the text following will be used as a filename that need to be
+returned. Before adding it, a check ill be done if the file exists.
+
+The resulting list of files can now be processed in the manifest to, for example build a configuration file.
+
 # AUTHOR
 
 Written by Mark Verboom

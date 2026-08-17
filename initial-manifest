@@ -7,15 +7,16 @@ set -e
 
 MANIFESTALL=autorun
 SOURCESTACK=()
+SOURCESTACKONCE=()
 
 CDISTSOURCE() {
    man="$1"
-   if test "$CDISTDEBUG" -gt 0; then
+   if test "${CDISTDEBUG:-0}" -gt 0; then
       echo "INIT MANIFEST: sourcing $man"
       set -x
    fi
    . "$man"
-   if test "$CDISTDEBUG" -gt 0; then
+   if test "${CDISTDEBUG:-0}" -gt 0; then
       set +x
    fi
 }
@@ -31,7 +32,7 @@ include() {
       exit 1
    fi
 
-   for dir in ${__manifest}/ $(ls -d ${__manifest}/*/); do
+   for dir in "${__manifest}/" "${__manifest}"/*/; do
       if test -e "${dir}${1}"; then
          include_manifest="${dir}${1}"
          break
@@ -51,7 +52,7 @@ include() {
       SOURCESTACK=("${manifest}")
    fi
 
-   for i in "${SOURCESTACK[@]}}"; do
+   for i in "${SOURCESTACK[@]}"; do
       if test "${i}" == "${include_manifest}"; then
          read line func file < <(caller)
          test -z "${file}" && file="${func}"
@@ -80,7 +81,7 @@ include_once() {
 include_cfg() {
    local repo="$1"; shift
    local key="$1"; shift
-   local line include
+   local line
 
    # Find configuration file
    include_find_cfg() {
@@ -102,16 +103,14 @@ include_cfg() {
    unset _cfgfile
    if test "${FUNCNAME[0]}" != "${FUNCNAME[1]}"; then
       _includedirs=( "$@" )
-      include_find_cfg --init "$key"
+      include_find_cfg --init "$key" || return 1
    else
-      include_find_cfg "$key"
+      include_find_cfg "$key" || return 1
    fi
-   test "$?" -ne 0 && return
 
    while read -r -u 5 line; do
       key="${line:1}"
       case "${line:0:1}" in
-
       @) include_cfg "$repo" "$key"
          test "$?" -ne 0 && { echo "Error processing include $key" > /dev/stderr;
                               return 1; }
@@ -176,6 +175,16 @@ if test "$CDISTACTION" != ""; then
    exit
 fi
 
+# Skip hosts listed in the exclusion file (one fqdn regex pattern per line)
+if test -f "$HOME/.cdist-fullrun-exclude"; then
+   while read -r pattern; do
+      case "$pattern" in ""|\#*) continue ;; esac
+      if [[ "$e_fqdn" =~ $pattern ]]; then
+         echo "Not running for $e_fqdn (excluded by $HOME/.cdist-fullrun-exclude)"
+         exit 0
+      fi
+   done < "$HOME/.cdist-fullrun-exclude"
+fi
 for manifest in "$__manifest"/"$MANIFESTALL"/*; do
   CDISTSOURCE "$manifest"
 done
