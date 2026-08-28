@@ -6,7 +6,6 @@
 set -e
 
 MANIFESTALL=autorun
-SOURCESTACK=()
 SOURCESTACKONCE=()
 
 CDISTSOURCE() {
@@ -21,7 +20,9 @@ CDISTSOURCE() {
    fi
 }
 
-# Safe include function for manifests including other manifests
+# Safe include function for manifests including other manifests.
+# Every manifest is sourced at most once per host (per run); a repeated
+# include request is silently skipped. include_once is kept as an alias.
 include() {
    local i dir include_manifest=''
 
@@ -39,31 +40,15 @@ include() {
       fi
    done
 
-   if test "${2}" = 'once'; then
-      for i in "${SOURCESTACKONCE[@]}"; do
-         if test "${i}" == "${include_manifest}"; then
-            return 0
-         fi
-      done
-   fi
-
-   # reset SOURCESTACK when this function is called from a new manifest
-   if [[ ! " ${SOURCESTACK[*]} " =~ " ${manifest} " ]]; then
-      SOURCESTACK=("${manifest}")
-   fi
-
-   for i in "${SOURCESTACK[@]}"; do
+   for i in "${SOURCESTACKONCE[@]}"; do
       if test "${i}" == "${include_manifest}"; then
-         read line func file < <(caller)
-         test -z "${file}" && file="${func}"
-         file=$(basename "${file}")
-         echo "ERROR: Circular/multiple include(s) of ${1} in manifest ${file}"
-         exit 1
+         test "${CDISTDEBUG:-0}" -gt 0 && \
+            echo "INIT MANIFEST: already included ${1} this run, skipping"
+         return 0
       fi
    done
 
    if ! test -z "${include_manifest}"; then
-      SOURCESTACK+=("${include_manifest}")
       SOURCESTACKONCE+=("${include_manifest}")
       CDISTSOURCE "$include_manifest"
    else
@@ -71,10 +56,9 @@ include() {
    fi
 }
 
-# Safe include function for manifests including other manifests, once per host
+# Alias for include; includes are once per host by definition
 include_once() {
-   include "${1}" once
-   return "$?"
+   include "${1}"
 }
 
 # parse configuration file
