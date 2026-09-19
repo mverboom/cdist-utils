@@ -1,280 +1,660 @@
-#!/usr/bin/env bash
-#
-# ExplorereQuery
-#
+#!/usr/bin/env python3
+"""ExplorerQuery - query cdist explorer output.
 
-require=( bc expr cdist )
+Reads the per-host explorer files under $CDIST_EXPLORE, selects the hosts that
+match an expression, and reports the requested fields for each match.
 
-debug() {
-   printf "%s" "$1"
+The expression language supports ``and``, ``or`` and ``not`` with the usual
+precedence (``not`` > ``and`` > ``or``). Square brackets may still be used for
+grouping, so queries written for the old bash implementation keep working.
+"""
+
+from __future__ import annotations
+
+import argparse
+import csv
+import html
+import io
+import json
+import math
+import os
+import re
+import shlex
+import signal
+import subprocess
+import sys
+from pathlib import Path
+
+EXIT_OK = 0
+EXIT_ERROR = 1
+EXIT_USAGE = 2
+
+# Operators that compare a field against an operand.
+BINARY_OPERATORS = {
+    "=",
+    "==",
+    "eq",
+    "ne",
+    "gt",
+    "ge",
+    "lt",
+    "le",
+    "contains",
+    "icontains",
+    "matches",
+    "startswith",
+    "endswith",
+    "in",
 }
+# Operators that only look at the field itself.
+UNARY_OPERATORS = {"exists", "empty", "nonempty"}
 
-sanitycheck() {
-   for file in "${require[@]}"; do
-      type "$file" > /dev/null 2>&1 || { echo "$file not available."; exit 1; }
-   done
-   ! test -d "$CDIST_EXPLORE" && { echo "Can't find explorer directory at $CDIST_EXPLORE."; exit 1; }
-}
+# SI suffixes accepted by numeric comparisons. Binary suffixes add an "i" and
+# use a base of 1024. Lowercase "m" is deliberately not accepted, matching
+# numfmt, to avoid confusing milli with mega.
+_SI_STEPS = "KMGTPEZY"
+_NUMBER_RE = re.compile(
+    r"^\s*([+-]?(?:\d+\.?\d*|\.\d+))\s*([kKMGTPEZY]?)(i?)b?\s*$"
+)
 
-pipeall() {
-   if test "$#" -gt 0; then
-      local cmd="$1"
-      shift
-      eval "$cmd" | pipeall "$@"
-   else
-      cat
-   fi
-}
+_FIELD_SPEC_RE = re.compile(r"^[A-Za-z0-9._-]+$")
+_MODIFIER_RE = re.compile(r"^(f|l)(\d+)$")
 
-# <explorer>:<mod>:<mod>:<mod>
-# mod:
-#   f[char][nr]   field[nr] where explorer line is split by [char]
-#   ~[word]       line contains word
-procexplore() {
-   local host="$1"
-   local explorer="$2"
-   local explfile="${CDIST_EXPLORE}/${host}/${explorer/:*/}"
 
-   ! test -f "$explfile" && { ( >&2 echo "Explorer file does not exist ($explfile)." ); exit 1; }
-   local mods
-   IFS=":" read -a mods <<< "$explorer"
-   cmds=()
-   for mod in "${mods[@]:1}"; do
-      case ${mod:0:1} in
-      \~) cmds+=( "grep \"${mod:1}\"" ) ;;
-      f) cmds+=( "cut -d \" \" -f ${mod:1}" ) ;;
-      *) ( 2>&1 echo "Unknown explore modifier: ${mod:0:1}." )
-         exit 1 ;;
-      esac
-   done
-   cat "$explfile" | pipeall "${cmds[@]}"
-}
+class QueryError(Exception):
+    """Raised for problems in the query itself (bad syntax or operand)."""
 
-getexpr() {
-   local host="$1"
-   local items=()
-   while test $pos -lt ${#ex[@]} -a ${#items[@]} -ne 3; do
-      case "${ex[$pos]}" in
-         [) pos=$(( pos + 1 ))
-            test "${ex[$pos]}" = "]" && break
-            getexpr "$host"
-            items+=( $? )
-            ;;
-         ]) break ;;
-         *) items+=( "${ex[$pos]}" ) ;;
-      esac
-      pos=$(( pos + 1 ))
-   done
-   # ToDo: verify if 0 or 1
-   test "${#items[@]}" -eq 0 && return 1
-   test "${#items[@]}" -eq 1 && return ${items[0]}
-   test "${#items[@]}" -ne 3 && { echo "Invalid expression: ${items[@]} ${#items[@]}"; exit 1; }
-   evaluate "$host" "${items[@]}"
-   return $?
-}
 
-numexpr() {
-   local res=$(echo "$1 $2 $3" | bc 2> /dev/null)
-   test "$res" = "0" && return 0 || return 1
-}
+class DataError(Exception):
+    """Raised for problems in the explorer data or environment."""
 
-evaluate() {
-   local host="$1"
-   shift
-   local items=( "$@" )
 
-   if test "${items[0]}" != "0" -a "${items[0]}" != "1"; then
-      local lval="$(procexplore "$host" "${items[0]}")"
-      numfmt --from=si "${items[2]}" > /dev/null 2>&1
-      test "$?" -eq 0 && local rval=$( numfmt --from=si "${items[2]}") || local rval=${items[2]}
-   fi
+def parse_number(text: str) -> float | None:
+    """Parse a number with an optional SI suffix, returning None if invalid.
 
-   case "${items[1]}" in
-   and) return $( expr ${items[0]} \& ${items[2]} ) ;;
-   or) return $( expr ${items[0]} \| ${items[2]} ) ;;
-   gt) numexpr "$lval" \> "$rval"
-       return $? ;;
-   ge) numexpr "$lval" \>= "$rval"
-       return $? ;;
-   lt) numexpr "$lval" \< "$rval"
-       return $? ;;
-   le) numexpr "$lval" \<= "$rval"
-       return $? ;;
-   =|==) test "$lval" = "$rval" > /dev/null
-       test "$?" -eq 0 && return 1 || return 0 ;;
-   contains) [[ "$lval" =~ .*$rval.* ]]
-       test "$?" -eq 0 && return 1 || return 0 ;;
-   *) echo "Error: unknown operator ${items[1]}"
-      exit 1
-      ;;
-   esac
-}
+    ``1K`` is 1000, ``1Ki`` is 1024 and ``1MiB`` is 1024**2. Plain integers and
+    floats are accepted as well.
+    """
+    match = _NUMBER_RE.match(text)
+    if match is None:
+        return None
+    value = float(match.group(1))
+    prefix = match.group(2)
+    binary = match.group(3) == "i"
+    if prefix:
+        power = _SI_STEPS.index(prefix.upper()) + 1
+        base = 1024 if binary else 1000
+        value *= base**power
+    return value
 
-usage() {
-   echo "$0 <options> <query>"
-   echo
-   echo "Mandatory options:"
-   echo " -r <report fields>    Comma seperated list of explorer files to report for each match."
-   echo "Optional options:"
-   echo " -h                    This help."
-   echo " -H <hosts>            Comma seperated list of hostnames."
-   echo " -t <tags>             Comma seperated list of host tags, any of which should match."
-   echo " -T <tags>             Comma seperated list of host tags, all of which should match."
-   echo " -j                    Output in json."
-   echo " -w                    Output in html."
-   echo
-   echo "Query"
-   echo "The query consists of expressions which can be combined with logical operators."
-   echo "An expression consists of:"
-   echo "   <explorer filename> <operator> <operand>"
-   echo "Supported operators:"
-   echo "   ==        exact string match"
-   echo "   contains  file contains string anywhere"
-   echo "   eq        numerical exact match"
-   echo "   gt        numerical greater than"
-   echo "   ge        numerical greater or equall than"
-   echo "   lt        numerical less than"
-   echo "   le        numerical less or equall than"
-   echo "Supported logical operators between expressions:"
-   echo "   and       both are true"
-   echo "   or        either or are true"
-   echo "Expression always need to be grouped with square brackets, no precedence is applied."
-   echo
-   echo "Examples:"
-   echo "Show hostname and kernel if distr explorer is debian:"
-   echo "  $0 -r hostname,kernel distr == debian"
-   echo "Show fqnd and IPv4 address for all debian systems with more than 1 cpu core:"
-   echo "  $0 -r fqdn,ipv4 [ distr == debian ] and [ cpu_cores gt 1 ]"
-   echo "Show hostname of all systems that have bluez installed as package:"
-   echo "  $0 -r hostname packages contains bluez"
-   exit 1
-}
 
-main() {
-   sanitycheck
+def split_field_spec(spec: str) -> tuple[str, list[str]]:
+    """Split ``<explorer>[:<modifier>...]`` into the base name and modifiers."""
+    parts = spec.split(":")
+    base, modifiers = parts[0], parts[1:]
+    if not _FIELD_SPEC_RE.match(base):
+        raise QueryError(f"Invalid explorer name: {base!r}")
+    return base, modifiers
 
-   declare -a ex
-   pos=0
-   reporting=()
-   DEBUG=0
-   output=basic
-   while getopts :hjwH:t:T:r:x opt; do
-      case $opt in
-      h) usage ;;
-      H) hosts+=( ${OPTARG//,/ } ) ;;
-      j) output=json ;;
-      w) output=html ;;
-      x) DEBUG=1 ;;
-      r) reporting=( ${OPTARG//,/ } ) ;;
-      t) tags+=( ${OPTARG//,/ } ); tagall=0 ;;
-      T) tags+=( ${OPTARG//,/ } ); tagall=1 ;;
-      \?) echo "Unknown option: -$OPTARG"
-          usage
-      ;;
-      :) echo "Option -$OPTARG requires argument"
-         usage
-      ;;
-      esac
-   done
-   shift $((OPTIND-1))
 
-   test "${#reporting[@]}" -eq 0 && { echo "No reporting output defined."; exit 1; }
+def apply_modifiers(lines: list[str], modifiers: list[str], spec: str) -> list[str]:
+    """Apply the ``:`` modifiers of an explorer spec to its lines in order."""
+    result = lines
+    for modifier in modifiers:
+        if modifier.startswith("~"):
+            pattern = modifier[1:]
+            try:
+                regex = re.compile(pattern)
+            except re.error as exc:
+                raise QueryError(f"Invalid regex in {spec!r}: {exc}") from exc
+            result = [line for line in result if regex.search(line)]
+            continue
+        match = _MODIFIER_RE.match(modifier)
+        if match:
+            kind, number = match.groups()
+            index = int(number)
+            if index < 1:
+                raise QueryError(f"Invalid index in modifier {modifier!r}")
+            if kind == "l":
+                result = [result[index - 1]] if len(result) >= index else []
+            else:
+                result = [
+                    line.split()[index - 1]
+                    for line in result
+                    if len(line.split()) >= index
+                ]
+        elif modifier == "trim":
+            result = [line.strip() for line in result]
+        elif modifier == "lower":
+            result = [line.lower() for line in result]
+        elif modifier == "upper":
+            result = [line.upper() for line in result]
+        elif modifier == "sort":
+            result = sorted(result)
+        elif modifier == "unique":
+            result = list(dict.fromkeys(result))
+        else:
+            raise QueryError(f"Unknown explorer modifier {modifier!r} in {spec!r}")
+    return result
 
-   if test "${#hosts[@]}" -eq 0; then
-      if test "${#tags[@]}" -eq 0; then
-         hosts=( $( cdist inventory list -H ) )
-      else
-         if test "$tagall" = "1"; then
-            hosts=( $( cdist inventory list -H -a -t "${tags[@]}" ) )
-         else
-            hosts=( $( cdist inventory list -H -t "${tags[@]}" ) )
-         fi
-      fi
-   fi
 
-   if test "$#" -eq 0; then
-      reshosts=( "${hosts[@]}" )
-   else
-      reshosts=()
-      for host in "${hosts[@]}"; do
-         ex=( "$@" )  
-         pos=0
-         getexpr "$host"
-         test "$?" -eq 1 && reshosts+=( "$host" )
-      done
-   fi
-   for host in "${reshosts[@]}"; do
-      declare +n result
-      unset result
-      declare -n result
-      hash=r$(echo "$host" | md5sum | cut -d ' ' -f 1)
-      declare -A "$hash"
-      result="$hash"
-      for report in "${reporting[@]}"; do
-         result[${report/:*/}]="$(procexplore "$host" "$report")"
-      done
-   done
+class ExplorerData:
+    """Lazy reader for the explorer files of a set of hosts."""
 
-   case "$output" in
-   basic)
-      for host in "${reshosts[@]}"; do
-         declare +n result
-         unset result
-         declare -n result
-         hash=r$(echo "$host" | md5sum | cut -d ' ' -f 1)
-         result=$hash
-         for explore in "${!result[@]}"; do
-            echo -n "${result[$explore]} "
-         done
-         echo
-      done
-   ;;
-   json)
-      echo "["
-      hostfirst=1
-      for host in "${reshosts[@]}"; do
-         test "$hostfirst" -eq 0 && echo -n ", " || hostfirst=0
-         echo "{ \"hostname\": \"$host\","
-         declare +n result
-         unset result
-         declare -n result
-         hash=r$(echo "$host" | md5sum | cut -d ' ' -f 1)
-         result=$hash
-         expfirst=1
-         for explore in "${!result[@]}"; do
-            test "$expfirst" -eq 0 && echo -n ", " || expfirst=0
-            echo -n "\"${explore}\": \"${result[$explore]}\""
-         done
-         echo "}"
-      done
-      echo "]"
-   ;;
-   html)
-      echo "<table border=1>"
-      hostfirst=1
-      for host in "${reshosts[@]}"; do
-         declare +n result
-         unset result
-         declare -n result
-         hash=r$(echo "$host" | md5sum | cut -d ' ' -f 1)
-         result=$hash
-         if test "$hostfirst" -eq 1; then
-            echo -n "<tr><th>hostname</th>"
-            for explore in "${!result[@]}"; do
-               echo -n "<th>${explore}</th>"
-            done
-            echo "</tr>"
-            hostfirst=0
-         fi
-         echo -n "<tr><td>$host</td>"
-         for explore in "${!result[@]}"; do
-            echo -n "<td>${result[$explore]}</td>"
-         done
-         echo "</tr>"
-      done
-      echo "</table>"
-   ;;
-   esac
-}
+    def __init__(self, root: Path) -> None:
+        self.root = root
+        self._cache: dict[tuple[str, str], list[str] | None] = {}
 
-main "$@"
+    def host_dirs(self) -> list[str]:
+        """Return the sorted names of all hosts that have explorer output."""
+        return sorted(entry.name for entry in self.root.iterdir() if entry.is_dir())
+
+    def has_host(self, host: str) -> bool:
+        """Return True if the host has an explorer output directory."""
+        return (self.root / host).is_dir()
+
+    def field(self, host: str, spec: str) -> list[str] | None:
+        """Return the processed lines of an explorer spec for a host.
+
+        Returns None when the explorer file does not exist for the host, which
+        is normal in a mixed fleet and is treated as "no data" by the
+        evaluator. An empty list means the file exists but the modifiers
+        filtered everything out.
+        """
+        key = (host, spec)
+        if key not in self._cache:
+            base, modifiers = split_field_spec(spec)
+            path = self.root / host / base
+            if not path.is_file():
+                value: list[str] | None = None
+            else:
+                lines = path.read_text(errors="replace").splitlines()
+                value = apply_modifiers(lines, modifiers, spec)
+            self._cache[key] = value
+        return self._cache[key]
+
+
+def evaluate_comparison(
+    records: list[str] | None, operator: str, operand: str | None
+) -> bool:
+    """Evaluate a single field/operator/operand comparison.
+
+    Missing data (``records is None``) never satisfies a positive comparison;
+    only ``exists`` and ``empty`` can be true. This avoids the old behaviour
+    where a missing file made numeric comparisons silently succeed.
+    """
+    if operator == "exists":
+        return records is not None
+    if operator == "empty":
+        return records is None or not any(line.strip() for line in records)
+    if operator == "nonempty":
+        return records is not None and any(line.strip() for line in records)
+
+    if records is None:
+        return False
+    assert operand is not None
+
+    if operator in ("=", "=="):
+        return any(line == operand for line in records)
+    if operator == "ne":
+        return bool(records) and all(line != operand for line in records)
+    if operator == "contains":
+        return any(operand in line for line in records)
+    if operator == "icontains":
+        needle = operand.lower()
+        return any(needle in line.lower() for line in records)
+    if operator == "matches":
+        try:
+            regex = re.compile(operand)
+        except re.error as exc:
+            raise QueryError(f"Invalid regex {operand!r}: {exc}") from exc
+        return any(regex.search(line) for line in records)
+    if operator == "startswith":
+        return any(line.startswith(operand) for line in records)
+    if operator == "endswith":
+        return any(line.endswith(operand) for line in records)
+    if operator == "in":
+        wanted = [item.strip() for item in operand.split(",")]
+        return any(line in wanted for line in records)
+
+    wanted_number = parse_number(operand)
+    if wanted_number is None:
+        raise QueryError(f"Operator {operator!r} needs a number, got {operand!r}")
+    numbers = [parse_number(line) for line in records]
+    numbers = [number for number in numbers if number is not None]
+    if not numbers:
+        return False
+    if operator == "eq":
+        return any(math.isclose(number, wanted_number) for number in numbers)
+    if operator == "gt":
+        return any(number > wanted_number for number in numbers)
+    if operator == "ge":
+        return any(number >= wanted_number for number in numbers)
+    if operator == "lt":
+        return any(number < wanted_number for number in numbers)
+    if operator == "le":
+        return any(number <= wanted_number for number in numbers)
+    raise QueryError(f"Unknown operator {operator!r}")
+
+
+class Parser:
+    """Recursive descent parser for the expression language."""
+
+    def __init__(self, tokens: list[str]) -> None:
+        self.tokens = tokens
+        self.pos = 0
+
+    def parse(self) -> tuple:
+        """Parse the whole token list into an expression tree."""
+        if not self.tokens:
+            return ("true",)
+        tree = self._parse_or()
+        if self.pos != len(self.tokens):
+            raise QueryError(f"Unexpected token {self.tokens[self.pos]!r}")
+        return tree
+
+    def _peek(self) -> str | None:
+        return self.tokens[self.pos] if self.pos < len(self.tokens) else None
+
+    def _next(self) -> str:
+        token = self.tokens[self.pos]
+        self.pos += 1
+        return token
+
+    def _parse_or(self) -> tuple:
+        tree = self._parse_and()
+        while self._peek() == "or":
+            self._next()
+            tree = ("or", tree, self._parse_and())
+        return tree
+
+    def _parse_and(self) -> tuple:
+        tree = self._parse_not()
+        while self._peek() == "and":
+            self._next()
+            tree = ("and", tree, self._parse_not())
+        return tree
+
+    def _parse_not(self) -> tuple:
+        if self._peek() == "not":
+            self._next()
+            return ("not", self._parse_not())
+        return self._parse_primary()
+
+    def _parse_primary(self) -> tuple:
+        token = self._peek()
+        if token is None:
+            raise QueryError("Unexpected end of expression")
+        if token in ("[", "("):
+            self._next()
+            tree = self._parse_or()
+            closing = ")" if token == "(" else "]"
+            if self._peek() != closing:
+                raise QueryError(f"Missing closing {closing}")
+            self._next()
+            return tree
+        if token in ("]", ")", "and", "or"):
+            raise QueryError(f"Unexpected token {token!r}")
+
+        field = self._next()
+        operator = self._peek()
+        if operator is None:
+            raise QueryError(f"Field {field!r} is missing an operator")
+        if operator in UNARY_OPERATORS:
+            self._next()
+            return ("cmp", field, operator, None)
+        if operator in BINARY_OPERATORS:
+            self._next()
+            operand = self._peek()
+            if operand is None or operand in ("]", ")", "and", "or"):
+                raise QueryError(f"Operator {operator!r} needs an operand")
+            self._next()
+            return ("cmp", field, operator, operand)
+        raise QueryError(f"Unknown or misplaced operator {operator!r} after {field!r}")
+
+
+def matches(tree: tuple, host: str, data: ExplorerData) -> bool:
+    """Evaluate a parsed expression tree for one host."""
+    kind = tree[0]
+    if kind == "true":
+        return True
+    if kind == "and":
+        return matches(tree[1], host, data) and matches(tree[2], host, data)
+    if kind == "or":
+        return matches(tree[1], host, data) or matches(tree[2], host, data)
+    if kind == "not":
+        return not matches(tree[1], host, data)
+    _, spec, operator, operand = tree
+    return evaluate_comparison(data.field(host, spec), operator, operand)
+
+
+def run_cdist(args: list[str]) -> str:
+    """Run a cdist command and return its stdout, raising DataError on failure."""
+    try:
+        result = subprocess.run(
+            ["cdist", *args], capture_output=True, text=True, timeout=120, check=False
+        )
+    except FileNotFoundError as exc:
+        raise DataError("cdist is not available; use -H to select hosts") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise DataError("cdist command timed out") from exc
+    if result.returncode != 0:
+        message = result.stderr.strip() or "unknown error"
+        raise DataError(f"cdist {' '.join(args)} failed: {message}")
+    return result.stdout
+
+
+def select_hosts(args: argparse.Namespace, data: ExplorerData) -> list[str]:
+    """Work out which hosts the query should run against."""
+    want_all = bool(args.all_tags)
+    tag_values = comma_split(args.tags) + comma_split(args.all_tags)
+    if args.tags and args.all_tags:
+        raise DataError("Use either -t or -T, not both")
+
+    if args.hosts:
+        hosts = comma_split(args.hosts)
+    elif tag_values:
+        command = ["inventory", "list", "-H"]
+        if want_all:
+            command.append("-a")
+        command.extend(["-t", *tag_values])
+        hosts = run_cdist(command).split()
+    else:
+        return data.host_dirs()
+
+    known = [host for host in hosts if data.has_host(host)]
+    unknown = [host for host in hosts if host not in known]
+    if unknown:
+        print(f"eq: no explorer output for: {', '.join(unknown)}", file=sys.stderr)
+    return known
+
+
+def all_tags() -> list[str]:
+    """Return all tags known to the cdist inventory."""
+    tags: set[str] = set()
+    for line in run_cdist(["inventory", "list"]).splitlines():
+        parts = line.split()
+        if len(parts) >= 2:
+            tags.update(tag for tag in parts[1].split(",") if tag)
+    return sorted(tags)
+
+
+def flatten(value: str) -> str:
+    """Collapse newlines so a value stays on one line in flat output."""
+    return " ".join(value.splitlines()) if "\n" in value else value
+
+
+def render_basic(rows: list[list[str]], header: list[str], show_header: bool) -> str:
+    """Render space separated rows, one host per line."""
+    out = [" ".join(header)] if show_header else []
+    out.extend(" ".join(flatten(cell) for cell in row) for row in rows)
+    return "\n".join(out)
+
+
+def render_tsv(rows: list[list[str]], header: list[str], show_header: bool) -> str:
+    """Render tab separated rows, one host per line."""
+    out = ["\t".join(header)] if show_header else []
+    out.extend("\t".join(flatten(cell) for cell in row) for row in rows)
+    return "\n".join(out)
+
+
+def render_csv(rows: list[list[str]], header: list[str], show_header: bool) -> str:
+    """Render CSV; the csv module quotes embedded newlines and commas."""
+    buffer = io.StringIO()
+    writer = csv.writer(buffer, lineterminator="\n")
+    if show_header:
+        writer.writerow(header)
+    writer.writerows(rows)
+    return buffer.getvalue().rstrip("\n")
+
+
+def render_json(rows: list[list[str]], header: list[str], hostnames: list[str]) -> str:
+    """Render a JSON array of host objects."""
+    documents = []
+    for host, row in zip(hostnames, rows):
+        document = {"hostname": host}
+        document.update(zip(header, row))
+        documents.append(document)
+    return json.dumps(documents, indent=2, ensure_ascii=False)
+
+
+def render_html(rows: list[list[str]], header: list[str], hostnames: list[str]) -> str:
+    """Render an escaped HTML table."""
+    out = ["<table border=1>"]
+    head = ["<tr>", "<th>hostname</th>"]
+    head.extend(f"<th>{html.escape(name)}</th>" for name in header)
+    head.append("</tr>")
+    out.append("".join(head))
+    for host, row in zip(hostnames, rows):
+        cells = ["<tr>", f"<td>{html.escape(host)}</td>"]
+        cells.extend(f"<td>{html.escape(cell)}</td>" for cell in row)
+        cells.append("</tr>")
+        out.append("".join(cells))
+    out.append("</table>")
+    return "\n".join(out)
+
+
+def build_parser() -> argparse.ArgumentParser:
+    """Create the command line parser."""
+    parser = argparse.ArgumentParser(
+        prog="eq",
+        description="Query cdist explorer output.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "Expressions combine comparisons with and/or/not (not > and > or).\n"
+            "Group with [ ] or ( ), or pass the whole query with -q.\n\n"
+            "Operators:\n"
+            "  =  ==        exact string match (any record)\n"
+            "  ne           not equal (field must exist)\n"
+            "  contains     substring match\n"
+            "  icontains    case insensitive substring match\n"
+            "  matches      regular expression match\n"
+            "  startswith   record starts with the operand\n"
+            "  endswith     record ends with the operand\n"
+            "  in           record equals one of a comma separated list\n"
+            "  eq gt ge lt le   numeric compare, SI suffixes allowed (1K, 2Mi)\n"
+            "  exists       explorer file exists for the host\n"
+            "  empty        explorer is missing or has no non-empty records\n"
+            "  nonempty     explorer has at least one non-empty record\n"
+            "\n"
+            "Field specifiers:\n"
+            "  <explorer>[:<modifier>...]\n"
+            "  f<n>      keep the n-th whitespace separated field of each line\n"
+            "  l<n>      keep the n-th line\n"
+            "  ~<regex>  keep lines matching the regular expression\n"
+            "  trim lower upper sort unique\n"
+            "\n"
+            "Examples:\n"
+            "  eq -r fqdn,os_version 'distr == debian and os_version lt 12'\n"
+            "  eq -r fqdn packages contains nginx\n"
+            "  eq -r hostname 'not distr in debian,ubuntu'\n"
+            "  eq --values distr\n"
+            "  eq --count 'cpu_cores ge 8'\n"
+        ),
+    )
+    parser.add_argument(
+        "-r", "--report", action="append", help="comma separated report fields"
+    )
+    parser.add_argument(
+        "-H", "--hosts", action="append", help="comma separated hostnames"
+    )
+    parser.add_argument(
+        "-t", "--tags", action="append", help="comma separated tags, any match"
+    )
+    parser.add_argument(
+        "-T", "--all-tags", action="append", help="comma separated tags, all match"
+    )
+    parser.add_argument(
+        "-q", "--query", help="query as one string (quotes honoured, ( ) split)"
+    )
+    parser.add_argument("-j", "--json", action="store_true", help="JSON output")
+    parser.add_argument("-w", "--html", action="store_true", help="HTML output")
+    parser.add_argument("--tsv", action="store_true", help="tab separated output")
+    parser.add_argument("--csv", action="store_true", help="CSV output")
+    parser.add_argument("--header", action="store_true", help="print a header row")
+    parser.add_argument("--sort", metavar="FIELD", help="sort by host or report field")
+    parser.add_argument("--count", action="store_true", help="only print match count")
+    parser.add_argument("--limit", type=int, metavar="N", help="limit number of rows")
+    parser.add_argument(
+        "--list-explorers",
+        action="store_true",
+        help="list explorer names present for the matching hosts",
+    )
+    parser.add_argument(
+        "--list-tags", action="store_true", help="list all cdist inventory tags"
+    )
+    parser.add_argument(
+        "--values", metavar="FIELD", help="list distinct values of a field"
+    )
+    parser.add_argument(
+        "-x", "--debug", action="store_true", help="print progress to stderr"
+    )
+    parser.add_argument("-V", "--version", action="version", version="eq (python) 2.0")
+    parser.add_argument(
+        "expression", nargs="*", help="query tokens, e.g. distr == debian"
+    )
+    return parser
+
+
+def comma_split(values: list[str] | None) -> list[str]:
+    """Flatten repeated comma separated option arguments into a list."""
+    items: list[str] = []
+    for value in values or []:
+        items.extend(item for item in value.split(",") if item)
+    return items
+
+
+def tokenize_query(text: str) -> list[str]:
+    """Tokenize a -q query, splitting parentheses but keeping quoted operands."""
+    lexer = shlex.shlex(text, posix=True, punctuation_chars="()")
+    lexer.whitespace_split = True
+    try:
+        return list(lexer)
+    except ValueError as exc:
+        raise QueryError(f"Invalid query string: {exc}") from exc
+
+
+def distinct_values(data: ExplorerData, hosts: list[str], spec: str) -> list[str]:
+    """Return the sorted distinct records of a field across hosts."""
+    values: set[str] = set()
+    for host in hosts:
+        records = data.field(host, spec)
+        if records:
+            values.update(record for record in records if record.strip())
+    return sorted(values)
+
+
+def sort_hosts(
+    hosts: list[str], field: str, reports: list[str], data: ExplorerData
+) -> list[str]:
+    """Sort hosts by hostname or by the string value of a report field."""
+    if field == "host":
+        return sorted(hosts)
+    if field not in reports:
+        raise QueryError(f"--sort field {field!r} is not in --report")
+    return sorted(hosts, key=lambda host: "\n".join(data.field(host, field) or []))
+
+
+def run(args: argparse.Namespace) -> int:
+    """Execute a parsed command line."""
+    explore_env = os.environ.get("CDIST_EXPLORE", "")
+    explore_root = Path(explore_env)
+    if not explore_env or not explore_root.is_dir():
+        raise DataError(
+            "CDIST_EXPLORE is not set or is not a directory "
+            f"({explore_env or 'unset'})"
+        )
+
+    data = ExplorerData(explore_root)
+
+    if args.list_tags:
+        print("\n".join(all_tags()))
+        return EXIT_OK
+
+    hosts = select_hosts(args, data)
+    if args.debug:
+        print(f"eq: {len(hosts)} candidate hosts", file=sys.stderr)
+
+    tokens = list(args.expression)
+    if args.query:
+        tokens = tokenize_query(args.query) + tokens
+    tree = Parser(tokens).parse()
+
+    selected = [host for host in hosts if matches(tree, host, data)]
+
+    if args.list_explorers:
+        names: set[str] = set()
+        for host in selected:
+            names.update(entry.name for entry in (explore_root / host).iterdir())
+        print("\n".join(sorted(names)))
+        return EXIT_OK
+
+    if args.values:
+        print("\n".join(distinct_values(data, selected, args.values)))
+        return EXIT_OK
+
+    if args.count:
+        print(len(selected))
+        return EXIT_OK
+
+    if args.limit is not None and args.limit >= 0:
+        selected = selected[: args.limit]
+
+    reports = comma_split(args.report)
+    if args.sort:
+        selected = sort_hosts(selected, args.sort, reports, data)
+    else:
+        selected = sorted(selected)
+
+    report_rows = []
+    for host in selected:
+        row = []
+        for spec in reports:
+            records = data.field(host, spec)
+            row.append("\n".join(records) if records is not None else "")
+        report_rows.append(row)
+
+    if reports:
+        flat_header, flat_rows = reports, report_rows
+    else:
+        flat_header = ["hostname"]
+        flat_rows = [[host] for host in selected]
+
+    if args.json:
+        output = render_json(report_rows, reports, selected)
+    elif args.html:
+        output = render_html(report_rows, reports, selected)
+    elif args.csv:
+        output = render_csv(flat_rows, flat_header, args.header)
+    elif args.tsv:
+        output = render_tsv(flat_rows, flat_header, args.header)
+    else:
+        output = render_basic(flat_rows, flat_header, args.header)
+
+    if output:
+        print(output)
+    return EXIT_OK
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Entry point: parse arguments, run the query and render the output."""
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    try:
+        return run(args)
+    except QueryError as exc:
+        print(f"eq: {exc}", file=sys.stderr)
+        return EXIT_USAGE
+    except DataError as exc:
+        print(f"eq: {exc}", file=sys.stderr)
+        return EXIT_ERROR
+    except BrokenPipeError:
+        return EXIT_OK
+    except KeyboardInterrupt:
+        return 130
+
+
+if __name__ == "__main__":
+    if hasattr(signal, "SIGPIPE"):
+        signal.signal(signal.SIGPIPE, signal.SIG_DFL)
+    sys.exit(main())

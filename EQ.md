@@ -1,109 +1,252 @@
 # NAME
 
-eq
+eq - query cdist explorer output
 
 # SYNOPSIS
 
-`eq [OPTION]... <expressions>...`
+`eq [OPTION]... [<expressions>...]`
 
 # DESCRIPTION
 
-A utility meant to more easily query the explorer output of cdist.
+`eq` reads the explorer output that cdist stores under `$CDIST_EXPLORE` and
+selects the hosts that match an expression. For every match the requested
+fields are reported. It is meant to answer questions like "which systems run
+debian with fewer than two cores" or "which systems have bluez installed"
+without opening explorer files by hand.
 
-Arguments that can be used are:
+The explorer output for a host lives in `$CDIST_EXPLORE/<fqdn>/<explorer>`.
+A missing explorer file is normal in a mixed fleet: it never makes a positive
+comparison succeed, it just means the field has no data for that host.
 
-`-r <report fields>`
-Define which explorer information should be reported for the systems matching the expressions.
-Multiple explorers can be defined separated which comma's.
+# OPTIONS
 
-`-H <hosts>`
-Specify one or more hosts to run the expressions on. Multiple hosts can be specified
-separated by comma's.
+`-r, --report <fields>`
+Comma separated list of fields to report for each match. Each field is an
+explorer name with optional modifiers (see FIELD SPECIFIERS). May be repeated.
+When omitted, `eq` prints the matching hostnames only.
 
-`-t <tags>`
-Use cdist inventory tags to specify the hosts to run the expressions on. Multiple tags can
-be defined, separated by comma's. When specifying multiple tags, any of them will match.
+`-H, --hosts <hosts>`
+Comma separated list of hostnames to run the query against. May be repeated.
+Hosts without explorer output are reported on stderr and skipped.
 
-`-T <tags>`
-Use cdist inventory tags to specify the hosts to run the expressions on. Multiple tags can
-be defined, separated by comma's. When specifying multiple tags, all of them will match.
+`-t, --tags <tags>`
+Comma separated list of cdist inventory tags. Hosts carrying any of the tags
+are queried. May be repeated.
 
-`-j`
-Output the resulting information in json format.
+`-T, --all-tags <tags>`
+Like `-t`, but hosts must carry all of the listed tags. `-t` and `-T` cannot
+be combined.
 
-`-w`
-Output the resulting information in html format.
+`-q, --query <string>`
+Pass the whole query as one string. Quoting is honoured and parentheses are
+split, so no shell escaping of brackets is needed.
+
+`-j, --json`
+Output a JSON array of objects. Values are escaped properly, including
+embedded newlines.
+
+`-w, --html`
+Output an HTML table with escaped values.
+
+`--tsv`
+Output tab separated values.
+
+`--csv`
+Output CSV. Fields containing commas or newlines are quoted.
+
+`--header`
+Print a header row for the flat output formats.
+
+`--sort <field>`
+Sort matches by `host` (the default) or by one of the reported fields.
+
+`--count`
+Print only the number of matching hosts.
+
+`--limit <n>`
+Print at most `n` rows after sorting.
+
+`--values <field>`
+Print the sorted distinct values of a field across the matching hosts. Use
+this to discover what values a field can take.
+
+`--list-explorers`
+Print the explorer names that exist for the selected hosts.
+
+`--list-tags`
+Print all tags known to the cdist inventory.
+
+`-x, --debug`
+Print the number of candidate hosts to stderr.
+
+`-h, --help`
+Show help.
+
+`-V, --version`
+Show the version.
 
 # EXPRESSIONS
 
-An expression consists of one or more expression combined with logical operators. The
-expression evaluation is rather limited, which requires entering specific precedence.
+A comparison looks like:
 
-A single expression looks like:
+`<field> <operator> <operand>`
 
-`<explorer file name> <operator> <operand>`
+Comparisons are combined with `and`, `or` and `not`. The usual precedence
+applies: `not` binds tightest, then `and`, then `or`. Grouping with `[ ]` or
+`( )` is available when the default precedence is not what you want.
 
-The explorer file name references the file in the explorer directory for the host.
+The old bracket-everything style is still valid, so queries written for the
+previous implementation keep working:
 
-The operator can be one of:
+`[ distr == debian ] and [ cpu_cores gt 1 ]`
 
-* contains file contains string anywhere
-* eq        numerical exact match
-* gt        numerical greater than
-* ge        numerical greater or equall than
-* lt        numerical less than
-* le        numerical less or equall than
+The same query without brackets is shorter and reads the same way:
 
-Multiple expression can be combined by logical operators. Supported operators are:
+`distr == debian and cpu_cores gt 1`
 
-*  and       both are true
-*  or        either or are true
+Comparisons against multi-line explorers (for example `packages`) are true
+when any record matches. Missing explorer data is only true for `exists` and
+`empty`.
 
-When using multiple expressions, square brackets need to be used in order to define
-precedence.
+The following operators are available:
 
-Two expressions:
+`=`, `==`
+Exact string match against any record.
 
-`[ expression1 ] and [ expression2 ]`
+`ne`
+Not equal. The field must exist, so hosts missing the explorer do not match.
 
-Three expressions:
+`contains`
+Substring match against any record.
 
-`[ expression1 ] and [ [ expression2 ] or [ expression3 ] ]
+`icontains`
+Case insensitive substring match.
 
-# EXPLORER FILENAME MODIFIERS
+`matches`
+Regular expression match against any record.
 
-Explorer files can have multiple lines or multiple values on a single line. In order
-to assist with this, modifiers can be used in reporting fields or expressions when
-specifying an explorer file.
+`startswith`, `endswith`
+Record starts or ends with the operand.
 
-The basic syntax is:
+`in`
+Record equals one of a comma separated list, for example `distr in debian,ubuntu`.
 
-`<explorer file>:<modifier>:<modifier>..`
+`eq`, `gt`, `ge`, `lt`, `le`
+Numeric comparison. Records that are not numbers are ignored; if no record is
+numeric the comparison is false. Operands accept SI suffixes: `1K` is 1000,
+`1Ki` and `1MiB` use 1024 as the base.
 
-The following modifiers are supported:
+`exists`
+The explorer file exists for the host.
 
-`f[nr]`
+`empty`
+The explorer is missing, or has no non-empty records.
 
-With using space as a seperator, output only field number <nr>.
+`nonempty`
+The explorer has at least one non-empty record.
 
-`~[word]`
+# FIELD SPECIFIERS
 
-Only output the line in the explorer containing the word <word>. Grep is used for this,
-so basic grep expressions can be used.
+An explorer name can be followed by `:` separated modifiers that transform
+the file before it is compared or reported:
+
+`<explorer>[:<modifier>...]`
+
+`f<n>`
+Keep the n-th whitespace separated field of every line. Unlike the old
+implementation this collapses runs of whitespace and ignores lines with too
+few fields.
+
+`l<n>`
+Keep only line number `n`.
+
+`~<regex>`
+Keep only the lines matching the regular expression.
+
+`trim`, `lower`, `upper`
+Strip surrounding whitespace, or change case.
+
+`sort`, `unique`
+Sort the records, or remove duplicates.
+
+Modifiers are applied left to right, for example
+`packages:~^nginx:f2` keeps the nginx lines and reports the second field
+(the version).
+
+# SELECTING HOSTS
+
+Without `-H`, `-t` or `-T`, `eq` queries every host directory under
+`$CDIST_EXPLORE`. This does not need the `cdist` binary. The `cdist` binary is
+only used when `-t`, `-T` or `--list-tags` is given.
+
+# OUTPUT
+
+The flat formats (`basic`, `--tsv`, `--csv`) print the reported fields in the
+order given to `-r`, one host per line. Embedded newlines are collapsed to a
+space for `basic` and `--tsv`, and quoted by `--csv`.
+
+`--json` and `--html` always include the hostname in addition to the reported
+fields.
+
+# EXIT STATUS
+
+`0`
+The query ran. Note that finding no matches is still a successful run.
+
+`1`
+A data or environment problem, for example `CDIST_EXPLORE` is not set or
+`cdist` is not available.
+
+`2`
+A problem with the query or options, for example an unknown operator.
+
+# ENVIRONMENT
+
+`CDIST_EXPLORE`
+Directory holding the per-host explorer output. Required.
 
 # EXAMPLES
 
-Report fqdn and os version for all debian systems with a version lower than 12
+Report fqdn and os version for all debian systems older than 12:
 
-`eq -r fqdn,os_version [ os = debian ] and [ os_version lt 12 ]`
+`eq -r fqdn,os_version 'distr == debian and os_version lt 12'`
 
-Report fqdn for all systems where the package list explorer contains nginx.
+Report fqdn for all systems where the package list contains nginx:
 
 `eq -r fqdn packages contains nginx`
 
-Report fqdn and version of bc for all systems where the package list explorer contains bc.
+Report fqdn and the nginx version for all systems that have nginx installed:
 
-`eq -r fqdn,packages:~^bc:f2 packages:f1 contains bc
+`eq -r fqdn,'packages:~^nginx:f2' packages contains nginx`
+
+List the hostnames that are not debian or ubuntu:
+
+`eq 'not distr in debian,ubuntu'`
+
+Show which distributions exist in the fleet:
+
+`eq --values distr`
+
+Count the systems with at least eight cores:
+
+`eq --count 'cpu_cores ge 8'`
+
+Export everything as JSON for further processing:
+
+`eq -j -r fqdn,distr,cpu_cores`
+
+# DIFFERENCES FROM THE OLD IMPLEMENTATION
+
+* Missing or non-numeric explorer data no longer makes numeric comparisons
+  succeed. This was the main source of silently wrong answers.
+* The documented `eq` operator now exists.
+* Report columns keep the order given to `-r` instead of associative array
+  order.
+* JSON output is valid JSON and HTML output is escaped.
+* Expressions have real precedence; brackets are optional. `not` was added.
+* `-r` is optional, and the tool works without `cdist` when no tags are used.
+* `!=` is deliberately not used; the operator is spelled `ne` so it can never
+  be mangled by shell history expansion.
 
 # AUTHOR
 
@@ -111,11 +254,11 @@ Written by Mark Verboom
 
 # REPORTING BUGS
 
-Prefferably by opening an issue on the github page.
+Preferably by opening an issue on the github page.
 
 # COPYRIGHT
 
-Copyright  ©  2014  Free Software Foundation, Inc.  License GPLv3+: GNU
+Copyright © 2014 Free Software Foundation, Inc. License GPLv3+: GNU
 GPL version 3 or later <http://gnu.org/licenses/gpl.html>.
-This is free software: you are free  to  change  and  redistribute  it.
+This is free software: you are free to change and redistribute it.
 There is NO WARRANTY, to the extent permitted by law.

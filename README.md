@@ -10,7 +10,7 @@ properly. I set them in the cdist user's environment.
 
 The directory where cdist is installed.
 
-`CDISTEXPLORE=path_to_explore_output`
+`CDIST_EXPLORE=path_to_explore_output`
 
 The directory where explorer output is stored.
 
@@ -26,6 +26,12 @@ Wrapper around cdist to make it easier to run cdist.
 
 Wrapper around some git commands to make it easier to change versions/upgrade.
 
+### eq
+
+Query the explorer output to quickly find systems matching a condition, for
+example `eq -r fqdn 'distr == debian and cpu_cores gt 1'`. See `EQ.md` for the
+full description.
+
 ### cdist-inventory
 
 Create a cdist inventory based on explorer output.
@@ -33,3 +39,8 @@ Create a cdist inventory based on explorer output.
 ### initial-manifest
 
 An example initial manifest I use and integrates part of the other scripts.
+
+## Tests
+
+The `eq` test suite uses [bats](https://github.com/bats-core/bats-core) and
+lives in `test/`. Run it from the repository root with `bats test`.

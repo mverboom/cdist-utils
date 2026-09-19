@@ -1,40 +1,144 @@
-#/usr/bin/env bash
-_eq_completions() {
-   local cur prev prev2 opts pref oper logic
-   cur="${COMP_WORDS[COMP_CWORD]}"
-   prev="${COMP_WORDS[COMP_CWORD-1]}"
-   prev2="${COMP_WORDS[COMP_CWORD-2]}"
-   opts="-h -t -T -H -r"
-   oper=( gt ge lt le = contains )
-   logic=( and or )
-   local explore
-   explore=( $(ls $CDIST_EXPLORE/$(hostname --fqdn)) )
+# shellcheck shell=bash
+# Bash completion for eq. Source this file, or install it as an
+# /etc/bash_completion.d or ~/.local/share/bash-completion/completions/eq file.
 
-   if [[ $cur == -* && ( $prev == -* || $prev2 == -* ) ]]; then
-      COMPREPLY=( $(compgen -W "${opts}" -- ${cur} ) )
-   elif [[ $pref == -* && ( ${prev} =~ -.*t.* || ${prev} =~ -.*T.* ) ]]; then
-      test "${cur//,/}" != "${cur}" && pref="${cur%,*},"
-      COMPREPLY=( $(compgen -W "$(cdist inventory list | sed -n "s/.* //; s/,/\n/gp" | sed "s/^/$pref/" | sort -u)" -- ${cur} ) ) 
-   elif [[ $prev == -* && ${prev} =~ H ]]; then
-      COMPREPLY=( $(compgen -W "$(cdist inventory list -H)" -- ${cur} ) )
-   elif [[ $prev == -* && ${prev} =~ r ]]; then
-      test "${cur//,/}" != "${cur}" && pref="${cur%,*},"
-      COMPREPLY=( $(compgen -W "$(ls $CDIST_EXPLORE/$(hostname --fqdn) | sed "s/^/$pref/") " -- "${cur}" ) )
-   elif [[ ${prev} == ] ]]; then
-      COMPREPLY=( $(compgen -W "${logic[*]}" -- "${cur}" ) )
-   elif [[ " ${logic[@]} " =~ " ${prev} " ]]; then
-      COMPREPLY=( '[' )
-   elif [[ ${prev} == \[ ]]; then
-      COMPREPLY=( $(compgen -W "${explore[*]}" -- "${cur}" ) )
-   elif [[ " ${explore[@]} " =~ " ${prev} " &&
-           ${prev2} != "-r" ]]; then
-      COMPREPLY=( $(compgen -W "${oper[*]}" -- "${cur}" ) )
-   elif [[ " ${oper[@]} " =~ " ${prev} " ]]; then
-      COMPREPLY=( )
-   elif [[ " ${oper[@]} " =~ " ${prev2} " ]]; then
-      COMPREPLY=( ']' )
+_eq_explorer_names() {
+   test -n "$CDIST_EXPLORE" && test -d "$CDIST_EXPLORE" || return 0
+   find "$CDIST_EXPLORE" -mindepth 2 -maxdepth 2 -type f -printf '%f\n' \
+      2> /dev/null | sort -u
+}
+
+_eq_host_names() {
+   if test -n "$CDIST_EXPLORE" && test -d "$CDIST_EXPLORE"; then
+      find "$CDIST_EXPLORE" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' \
+         2> /dev/null | sort
    else
-      COMPREPLY=( $(compgen -W "${explore[*]}" -- "${cur}" ) )
+      cdist inventory list -H 2> /dev/null
    fi
 }
+
+_eq_tag_names() {
+   cdist inventory list 2> /dev/null | sed -n 's/.* //; s/,/\n/gp' | sort -u
+}
+
+# Complete a possibly comma separated list, keeping the part before the last
+# comma as a prefix.
+_eq_complete_list() {
+   local wordlist="$1" cur="$2" matches match
+   local prefix="" rest="$cur"
+   if [[ "$cur" == *,* ]]; then
+      prefix="${cur%,*},"
+      rest="${cur##*,}"
+   fi
+   matches="$(compgen -W "$wordlist" -- "$rest" || true)"
+   COMPREPLY=()
+   for match in $matches; do
+      COMPREPLY+=("${prefix}${match}")
+   done
+}
+
+# Complete the modifier after the last colon of a field spec, for example
+# "packages:~<TAB>".
+_eq_complete_modifiers() {
+   local cur="$1"
+   local prefix="${cur%:*}:"
+   # Tilde is not passed to compgen: it would be expanded to $HOME.
+   local mods="f1 f2 f3 l1 l2 trim lower upper sort unique"
+   local rest="${cur##*:}" matches match
+   matches="$(compgen -W "$mods" -- "$rest" || true)"
+   COMPREPLY=()
+   if [[ "$rest" == "" || "$rest" == "~" ]]; then
+      COMPREPLY+=("${prefix}~")
+   fi
+   for match in $matches; do
+      COMPREPLY+=("${prefix}${match}")
+   done
+}
+
+_eq_completions() {
+   local cur prev prev2 base fields binary_ops unary_ops logic opts
+   cur="${COMP_WORDS[COMP_CWORD]}"
+   prev="${COMP_WORDS[COMP_CWORD-1]}"
+   prev2="${COMP_WORDS[COMP_CWORD-2]:-}"
+   COMPREPLY=()
+
+   opts="-h -H -t -T -r -q -j -w -x -V --help --hosts --tags --all-tags
+         --report --query --json --html --tsv --csv --header --sort --count
+         --limit --list-explorers --list-tags --values --debug --version"
+   binary_ops="= == ne eq gt ge lt le contains icontains matches startswith
+               endswith in"
+   unary_ops="exists empty nonempty"
+   logic="and or not"
+   mapfile -t fields < <(_eq_explorer_names)
+
+   if [[ "$cur" == -* ]]; then
+      mapfile -t COMPREPLY < <(compgen -W "$opts" -- "$cur")
+      return
+   fi
+
+   if [[ "$cur" == *:* ]]; then
+      base="${cur%%:*}"
+      if [[ " ${fields[*]} " == *" $base "* ]]; then
+         _eq_complete_modifiers "$cur"
+         return
+      fi
+   fi
+
+   case "$prev" in
+   -t | --tags | -T | --all-tags)
+      _eq_complete_list "$(_eq_tag_names)" "$cur"
+      return
+      ;;
+   -H | --hosts)
+      _eq_complete_list "$(_eq_host_names)" "$cur"
+      return
+      ;;
+   -r | --report)
+      _eq_complete_list "${fields[*]}" "$cur"
+      return
+      ;;
+   --values | --sort)
+      mapfile -t COMPREPLY < <(compgen -W "${fields[*]} host" -- "$cur")
+      return
+      ;;
+   -q | --query)
+      return
+      ;;
+   esac
+
+   # prev is the command name itself for the first word. It collides with the
+   # eq operator, so skip the token checks in that case.
+   if (( COMP_CWORD > 1 )); then
+      if [[ " $unary_ops " == *" $prev "* ]]; then
+         mapfile -t COMPREPLY < <(compgen -W "] ) and or" -- "$cur")
+         return
+      fi
+      if (( COMP_CWORD > 2 )) && [[ " $binary_ops " == *" $prev2 "* ]]; then
+         mapfile -t COMPREPLY < <(compgen -W "] ) and or" -- "$cur")
+         return
+      fi
+      if [[ " $logic " == *" $prev "* ]]; then
+         mapfile -t COMPREPLY < <(compgen -W "[ ( ${fields[*]}" -- "$cur")
+         return
+      fi
+      if [[ "$prev" == "]" || "$prev" == ")" ]]; then
+         mapfile -t COMPREPLY < <(compgen -W "$logic" -- "$cur")
+         return
+      fi
+      if [[ "$prev" == "[" || "$prev" == "(" ]]; then
+         mapfile -t COMPREPLY < <(compgen -W "${fields[*]}" -- "$cur")
+         return
+      fi
+      if [[ " ${fields[*]} " == *" ${prev%%:*} "* ]]; then
+         mapfile -t COMPREPLY < <(compgen -W "$binary_ops $unary_ops" -- "$cur")
+         return
+      fi
+      if [[ " $binary_ops " == *" $prev "* ]]; then
+         return
+      fi
+   fi
+
+   mapfile -t COMPREPLY < <(compgen -W "[ ( ${fields[*]} $opts" -- "$cur")
+}
+
 complete -F _eq_completions eq
