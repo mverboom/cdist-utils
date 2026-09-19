@@ -18,6 +18,8 @@ The explorer output for a host lives in `$CDIST_EXPLORE/<fqdn>/<explorer>`.
 A missing explorer file is normal in a mixed fleet: it never makes a positive
 comparison succeed, it just means the field has no data for that host.
 
+Running `eq` without any arguments prints the usage.
+
 # OPTIONS
 
 `-r, --report <fields>`

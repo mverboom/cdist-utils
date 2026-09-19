@@ -153,9 +153,16 @@ teardown_file() {
    run "$EQ" --count
    [ "$status" -eq 0 ]
    [ "$output" = "3" ]
-   run "$EQ"
+   run "$EQ" -j
    [ "$status" -eq 0 ]
-   [ "$output" = $'h1.example.com\nh2.example.com\nh3.example.com' ]
+   [[ "$output" == *"h1.example.com"* ]]
+   [[ "$output" != *".git"* ]]
+}
+
+@test "no arguments shows usage and exits 2" {
+   run --separate-stderr "$EQ"
+   [ "$status" -eq 2 ]
+   [[ "$stderr" == *"usage: eq"* ]]
 }
 
 @test "header is printed on request" {

@@ -646,7 +646,12 @@ def run(args: argparse.Namespace) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     """Entry point: parse arguments, run the query and render the output."""
+    if argv is None:
+        argv = sys.argv[1:]
     parser = build_parser()
+    if not argv:
+        parser.print_help(sys.stderr)
+        return EXIT_USAGE
     args = parser.parse_args(argv)
     try:
         return run(args)
