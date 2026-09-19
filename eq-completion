@@ -44,11 +44,13 @@ _eq_use_fzf() {
 
 # Set COMPREPLY from "value<TAB>description" lines, filtered by the rest of the
 # word. prefix is prepended to each value. With fzf installed a described fuzzy
-# menu is shown (a single match is selected without a menu). Without fzf the
-# descriptions are printed on the second Tab.
+# menu is shown (a single match is selected without a menu); an optional
+# preview command can show extra context for the highlighted candidate. Without
+# fzf the descriptions are printed on the second Tab.
 _eq_reply_annotated() {
-   local annotated="$1" prefix="${2:-}" rest="${3:-}"
+   local annotated="$1" prefix="${2:-}" rest="${3:-}" preview="${4:-}"
    local filtered picked
+   local -a fzf_opts
    filtered="$(printf '%s\n' "$annotated" | awk -F'\t' -v p="$rest" '
       p == "" || index($1, p) == 1 {
          if (NF > 1 && $2 != "") print $1 "\t" $2
@@ -61,9 +63,13 @@ _eq_reply_annotated() {
       # fzf uses an inline window; ask readline to redraw the line afterwards,
       # otherwise the command line is left visually corrupted.
       bind '"\e[0n": redraw-current-line' 2> /dev/null || true
-      picked="$(printf '%s\n' "$filtered" | \
-         fzf --height=40% --reverse --delimiter="$(printf '\t')" \
-         --with-nth=1,2 --nth=1 --select-1 --exit-0)" || true
+      # shellcheck disable=SC2054  # 1,2 is the --with-nth value, not a separator
+      fzf_opts=(--height=40% --reverse --delimiter="$(printf '\t')"
+         --with-nth=1,2 --nth=1 --select-1 --exit-0)
+      if [ -n "$preview" ]; then
+         fzf_opts+=(--preview "$preview" --preview-window 'right:45%:wrap')
+      fi
+      picked="$(printf '%s\n' "$filtered" | fzf "${fzf_opts[@]}")" || true
       [ -t 1 ] && printf '\e[5n'
       if [ -n "$picked" ]; then
          mapfile -t COMPREPLY < <(printf '%s\n' "$picked" | cut -f1 | \
@@ -89,7 +95,8 @@ _eq_complete_modifiers() {
 
 # Complete a field spec, including modifiers, honouring a comma list prefix.
 _eq_complete_fields() {
-   local cur="$1" annotated="$2" fieldlist="$3" fieldspec prefix base
+   local cur="$1" annotated="$2" fieldlist="$3" preview="${4:-}"
+   local fieldspec prefix base
    if [[ "$cur" == *,* ]]; then
       prefix="${cur%,*},"
       fieldspec="${cur##*,}"
@@ -106,7 +113,7 @@ _eq_complete_fields() {
          return
       fi
    fi
-   _eq_reply_annotated "$annotated" "$prefix" "$fieldspec"
+   _eq_reply_annotated "$annotated" "$prefix" "$fieldspec" "$preview"
 }
 
 # Split the current line up to the cursor into words, honouring simple quotes.
@@ -137,7 +144,7 @@ _eq_split_line() {
 }
 
 _eq_completions_impl() {
-   local cur prev base opts flags value_opts fields_annotated
+   local cur prev base opts flags value_opts fields_annotated field_preview
    local binary_ops unary_ops logic
    local -a fields expr words
    local i word last second_last cidx
@@ -177,6 +184,8 @@ _eq_completions_impl() {
 
    fields_annotated="$(_eq_complete_call fields)"
    mapfile -t fields < <(printf '%s\n' "$fields_annotated" | cut -f1)
+   # Shown in fzf's preview pane while picking a field.
+   field_preview='eq --complete values {1} --limit 12 2> /dev/null'
 
    if [[ "$cur" == -* ]]; then
       mapfile -t COMPREPLY < <(compgen -W "$opts" -- "$cur")
@@ -187,7 +196,8 @@ _eq_completions_impl() {
       base="${cur##*,}"
       base="${base%%:*}"
       if [[ " ${fields[*]} " == *" $base "* ]]; then
-         _eq_complete_fields "$cur" "$fields_annotated" "${fields[*]}"
+         _eq_complete_fields "$cur" "$fields_annotated" "${fields[*]}" \
+            "$field_preview"
          return
       fi
    fi
@@ -195,7 +205,8 @@ _eq_completions_impl() {
    # Completing the value of an option.
    case "$prev" in
    -r | --report)
-      _eq_complete_fields "$cur" "$fields_annotated" "${fields[*]}"
+      _eq_complete_fields "$cur" "$fields_annotated" "${fields[*]}" \
+         "$field_preview"
       return
       ;;
    -H | --hosts)
@@ -208,10 +219,11 @@ _eq_completions_impl() {
       ;;
    --values | --sort)
       if [[ "$cur" == *:* ]]; then
-         _eq_complete_fields "$cur" "$fields_annotated" "${fields[*]}"
+         _eq_complete_fields "$cur" "$fields_annotated" "${fields[*]}" \
+            "$field_preview"
       else
          _eq_reply_annotated "$fields_annotated
-host" "" "$cur"
+host" "" "$cur" "$field_preview"
       fi
       return
       ;;
@@ -236,7 +248,7 @@ host" "" "$cur"
    # Start of a query.
    if [ "${#expr[@]}" -eq 0 ]; then
       _eq_reply_annotated "$(printf '%s\n' '[' '(' $opts)
-$fields_annotated" "" "$cur"
+$fields_annotated" "" "$cur" "$field_preview"
       return
    fi
 
@@ -266,7 +278,7 @@ $fields_annotated" "" "$cur"
    if [[ " $logic " == *" $last "* ]]; then
       _eq_reply_annotated "$fields_annotated
 [
-(" "" "$cur"
+(" "" "$cur" "$field_preview"
       return
    fi
    if [[ "$last" == "]" || "$last" == ")" ]]; then
@@ -274,7 +286,7 @@ $fields_annotated" "" "$cur"
       return
    fi
    if [[ "$last" == "[" || "$last" == "(" ]]; then
-      _eq_reply_annotated "$fields_annotated" "" "$cur"
+      _eq_reply_annotated "$fields_annotated" "" "$cur" "$field_preview"
       return
    fi
 

@@ -121,8 +121,7 @@ colon_insert() {
    [ "${COMPREPLY[*]}" = "debian" ]
 }
 
-@test "fzf menu picks a candidate when enabled" {
-   PATH="$BT_FIXTURE/fzfbins:$PATH"
+@test "fzf menu picks a candidate when enabled" {   PATH="$BT_FIXTURE/fzfbins:$PATH"
    export PATH FZF_PICK=2
    unset EQ_PLAIN
    COMP_WORDS=(eq distr "")
@@ -141,6 +140,31 @@ colon_insert() {
    COMP_TYPE=TAB
    _eq_completions
    [ "${COMPREPLY[*]}" = "alpine" ]
+}
+
+@test "field completion asks fzf for a value preview" {
+   PATH="$BT_FIXTURE/fzfbins:$PATH"
+   export PATH FZF_PICK=0 FZF_ARGS_LOG="$BT_FIXTURE/fzf.args"
+   unset EQ_PLAIN COMP_LINE COMP_POINT
+   : > "$FZF_ARGS_LOG"
+   COMP_WORDS=(eq -r "")
+   COMP_CWORD=2
+   COMP_TYPE=TAB
+   _eq_completions
+   grep -q -- "--preview" "$FZF_ARGS_LOG"
+}
+
+@test "operator completion does not ask fzf for a preview" {
+   PATH="$BT_FIXTURE/fzfbins:$PATH"
+   export PATH FZF_PICK=0 FZF_ARGS_LOG="$BT_FIXTURE/fzf.args"
+   unset EQ_PLAIN COMP_LINE COMP_POINT
+   : > "$FZF_ARGS_LOG"
+   COMP_WORDS=(eq distr "")
+   COMP_CWORD=2
+   COMP_TYPE=TAB
+   _eq_completions
+   run grep -q -- "--preview" "$FZF_ARGS_LOG"
+   [ "$status" -ne 0 ]
 }
 
 @test "field modifiers complete when readline splits on the colon" {

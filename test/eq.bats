@@ -302,6 +302,18 @@ assert data[0]["note"] == "<b>&\"q\"", data
    [[ "$output" == *$'alpine\t1 host'* ]]
 }
 
+@test "complete values respects the limit for previews" {
+   run "$EQ" --complete values distr --limit 1
+   [ "$status" -eq 0 ]
+   [ "$(printf '%s\n' "$output" | wc -l)" -eq 1 ]
+}
+
+@test "values respects the limit" {
+   run "$EQ" --values distr --limit 1
+   [ "$status" -eq 0 ]
+   [ "$(printf '%s\n' "$output" | wc -l)" -eq 1 ]
+}
+
 @test "complete lists static contexts without CDIST_EXPLORE" {
    run env -u CDIST_EXPLORE "$EQ" --complete logical
    [ "$status" -eq 0 ]

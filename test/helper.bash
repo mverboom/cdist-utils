@@ -90,6 +90,7 @@ EOF
    mkdir -p "$BT_FIXTURE/fzfbins"
    cat > "$BT_FIXTURE/fzfbins/fzf" <<'EOF'
 #!/bin/bash
+printf '%s\n' "$*" >> "${FZF_ARGS_LOG:-/dev/null}"
 lines=(); while IFS= read -r line; do lines+=("$line"); done
 printf '%s\n' "${lines[${FZF_PICK:-0}]}"
 exit 0

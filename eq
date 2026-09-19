@@ -497,6 +497,8 @@ def run_complete(args: argparse.Namespace) -> int:
         except DataError:
             hosts = data.host_dirs()
     pairs = completion_pairs(args.complete, list(args.expression), data, hosts)
+    if args.limit is not None and args.limit >= 0:
+        pairs = pairs[: args.limit]
     for value, description in pairs:
         print(f"{value}\t{description}" if description else value)
     return EXIT_OK
@@ -886,7 +888,10 @@ def run(args: argparse.Namespace) -> int:
         return EXIT_OK
 
     if args.values:
-        print("\n".join(distinct_values(data, selected, args.values)))
+        values = distinct_values(data, selected, args.values)
+        if args.limit is not None and args.limit >= 0:
+            values = values[: args.limit]
+        print("\n".join(values))
         return EXIT_OK
 
     if args.count:
