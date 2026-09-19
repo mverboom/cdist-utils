@@ -128,3 +128,13 @@ complete_eq() {
    complete_eq -r fqdn distr ""
    [[ " ${COMPREPLY[*]} " == *" =="* ]]
 }
+
+@test "explorer and host completion skip hidden directories" {
+   complete_eq ""
+   [[ " ${COMPREPLY[*]} " != *" HEAD "* ]]
+   [[ " ${COMPREPLY[*]} " == *" distr "* ]]
+
+   complete_eq -H ""
+   [[ " ${COMPREPLY[*]} " != *".git"* ]]
+   [[ " ${COMPREPLY[*]} " == *"h1.example.com"* ]]
+}

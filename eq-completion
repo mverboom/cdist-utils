@@ -4,14 +4,16 @@
 
 _eq_explorer_names() {
    test -n "$CDIST_EXPLORE" && test -d "$CDIST_EXPLORE" || return 0
-   find "$CDIST_EXPLORE" -mindepth 2 -maxdepth 2 -type f -printf '%f\n' \
+   # Exclude hidden host directories such as the .git of a versioned tree.
+   find "$CDIST_EXPLORE" -mindepth 2 -maxdepth 2 -type f \
+      -not -path "$CDIST_EXPLORE/.*" -printf '%f\n' \
       2> /dev/null | sort -u
 }
 
 _eq_host_names() {
    if test -n "$CDIST_EXPLORE" && test -d "$CDIST_EXPLORE"; then
-      find "$CDIST_EXPLORE" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' \
-         2> /dev/null | sort
+      find "$CDIST_EXPLORE" -mindepth 1 -maxdepth 1 -type d -not -name '.*' \
+         -printf '%f\n' 2> /dev/null | sort
    else
       cdist inventory list -H 2> /dev/null
    fi
