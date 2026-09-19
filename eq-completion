@@ -80,9 +80,16 @@ _eq_reply_annotated() {
       awk -v pre="$prefix" '{print pre $0}')
 }
 
-# Complete the modifiers after the last colon of a field spec.
+# Complete the modifiers after the last colon of a field spec. bash treats ':'
+# as a word break, so readline only replaces the part after the last colon:
+# in that case return the bare modifiers and suppress the trailing space.
 _eq_complete_modifiers() {
    local cur="$1"
+   if [[ "${COMP_WORDBREAKS:-}" == *:* ]]; then
+      _eq_reply_annotated "$(_eq_complete_call modifiers)" "" "${cur##*:}"
+      compopt -o nospace 2> /dev/null || true
+      return
+   fi
    _eq_reply_annotated "$(_eq_complete_call modifiers)" "${cur%:*}:" \
       "${cur##*:}"
 }

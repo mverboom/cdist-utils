@@ -50,27 +50,37 @@ complete_eq() {
 }
 
 @test "report option completes field modifiers" {
+   # bash breaks on ':' (COMP_WORDBREAKS), so readline replaces only the part
+   # after the colon and the candidates are the bare modifiers.
    complete_eq -r "packages:"
-   [[ " ${COMPREPLY[*]} " == *"packages:f1"* ]]
-   [[ " ${COMPREPLY[*]} " == *"packages:trim"* ]]
+   [[ " ${COMPREPLY[*]} " == *" f1 "* ]]
+   [[ " ${COMPREPLY[*]} " == *" trim "* ]]
 }
 
 @test "field modifiers complete after a comma in a report list" {
    complete_eq -r "fqdn,packages:"
-   [[ " ${COMPREPLY[*]} " == *"fqdn,packages:f1"* ]]
-   [[ " ${COMPREPLY[*]} " == *"fqdn,packages:trim"* ]]
-   [[ " ${COMPREPLY[*]} " == *"fqdn,packages:~"* ]]
+   [[ " ${COMPREPLY[*]} " == *" f1 "* ]]
+   [[ " ${COMPREPLY[*]} " == *" trim "* ]]
+   [[ " ${COMPREPLY[*]} " == *" ~ "* ]]
 }
 
 @test "field modifiers complete in an expression" {
    complete_eq "packages:"
-   [[ " ${COMPREPLY[*]} " == *"packages:~"* ]]
-   [[ " ${COMPREPLY[*]} " == *"packages:l1"* ]]
+   [[ " ${COMPREPLY[*]} " == *" ~ "* ]]
+   [[ " ${COMPREPLY[*]} " == *" l1 "* ]]
 }
 
 @test "field modifiers complete after a chained modifier" {
    complete_eq -r "packages:~^nginx:"
-   [[ " ${COMPREPLY[*]} " == *"packages:~^nginx:f1"* ]]
+   [[ " ${COMPREPLY[*]} " == *" f1 "* ]]
+}
+
+@test "modifiers are prefixed when the colon is not a word break" {
+   local saved="${COMP_WORDBREAKS:-}"
+   COMP_WORDBREAKS="${COMP_WORDBREAKS//:}"
+   complete_eq -r "packages:"
+   [[ " ${COMPREPLY[*]} " == *"packages:f1"* ]]
+   COMP_WORDBREAKS="$saved"
 }
 
 @test "field completes the operators" {
@@ -120,8 +130,8 @@ complete_eq() {
    COMP_CWORD=3
    COMP_TYPE=TAB
    _eq_completions
-   [[ " ${COMPREPLY[*]} " == *"fqdn:f1"* ]]
-   [[ " ${COMPREPLY[*]} " == *"fqdn:~"* ]]
+   [[ " ${COMPREPLY[*]} " == *" f1 "* ]]
+   [[ " ${COMPREPLY[*]} " == *" ~ "* ]]
 }
 
 @test "tokenizer keeps operators intact for value completion" {
