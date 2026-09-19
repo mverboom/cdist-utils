@@ -21,6 +21,8 @@ complete_eq() {
    COMP_WORDS=(eq "$@")
    COMP_CWORD=$((${#COMP_WORDS[@]} - 1))
    COMP_TYPE=TAB
+   COMP_LINE="${COMP_WORDS[*]}"
+   COMP_POINT=${#COMP_LINE}
    _eq_completions
    return 0
 }
@@ -109,6 +111,27 @@ complete_eq() {
    COMP_TYPE=TAB
    _eq_completions
    [ "${COMPREPLY[*]}" = "alpine" ]
+}
+
+@test "field modifiers complete when readline splits on the colon" {
+   COMP_LINE="eq -r fqdn:"
+   COMP_POINT=${#COMP_LINE}
+   COMP_WORDS=(eq -r fqdn :)
+   COMP_CWORD=3
+   COMP_TYPE=TAB
+   _eq_completions
+   [[ " ${COMPREPLY[*]} " == *"fqdn:f1"* ]]
+   [[ " ${COMPREPLY[*]} " == *"fqdn:~"* ]]
+}
+
+@test "tokenizer keeps operators intact for value completion" {
+   COMP_LINE="eq distr == de"
+   COMP_POINT=${#COMP_LINE}
+   COMP_WORDS=(eq distr == de)
+   COMP_CWORD=3
+   COMP_TYPE=TAB
+   _eq_completions
+   [ "${COMPREPLY[*]}" = "debian" ]
 }
 
 @test "second Tab prints help descriptions" {

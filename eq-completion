@@ -58,9 +58,13 @@ _eq_reply_annotated() {
    [ -z "$filtered" ] && return
 
    if _eq_use_fzf; then
+      # fzf uses an inline window; ask readline to redraw the line afterwards,
+      # otherwise the command line is left visually corrupted.
+      bind '"\e[0n": redraw-current-line' 2> /dev/null || true
       picked="$(printf '%s\n' "$filtered" | \
          fzf --height=40% --reverse --delimiter="$(printf '\t')" \
          --with-nth=1,2 --nth=1 --select-1 --exit-0)" || true
+      [ -t 1 ] && printf '\e[5n'
       if [ -n "$picked" ]; then
          mapfile -t COMPREPLY < <(printf '%s\n' "$picked" | cut -f1 | \
             awk -v pre="$prefix" '{print pre $0}')
@@ -103,15 +107,54 @@ _eq_complete_fields() {
    _eq_reply_annotated "$annotated" "$prefix" "$fieldspec"
 }
 
+# Split the current line up to the cursor into words, honouring simple quotes.
+# bash breaks COMP_WORDS on COMP_WORDBREAKS characters such as ':' and '=',
+# which would otherwise split "packages:~^nginx" or "==" apart.
+_eq_split_line() {
+   local line="${COMP_LINE:0:COMP_POINT}"
+   local word="" quote="" char i
+   _EQ_LINE_WORDS=()
+   for ((i = 0; i < ${#line}; i++)); do
+      char="${line:i:1}"
+      if [ -n "$quote" ]; then
+         if [ "$char" = "$quote" ]; then
+            quote=""
+         else
+            word+="$char"
+         fi
+      elif [ "$char" = "'" ] || [ "$char" = '"' ]; then
+         quote="$char"
+      elif [ "$char" = " " ] || [ "$char" = $'\t' ]; then
+         _EQ_LINE_WORDS+=("$word")
+         word=""
+      else
+         word+="$char"
+      fi
+   done
+   _EQ_LINE_WORDS+=("$word")
+}
+
 _eq_completions() {
    local cur prev base opts flags value_opts fields_annotated
    local binary_ops unary_ops logic
-   local -a fields expr
-   local i word last second_last
+   local -a fields expr words
+   local i word last second_last cidx
 
-   cur="${COMP_WORDS[COMP_CWORD]}"
-   prev="${COMP_WORDS[COMP_CWORD-1]}"
    COMPREPLY=()
+
+   # Build the word list from the raw line when possible. bash splits
+   # COMP_WORDS on COMP_WORDBREAKS characters such as ':' and '=', which would
+   # split a field spec like "packages:~^nginx" in the wrong place.
+   if [ -n "${COMP_LINE:-}" ] && [ "${COMP_POINT:-0}" -gt 0 ]; then
+      _eq_split_line
+      words=("${_EQ_LINE_WORDS[@]}")
+   else
+      words=("${COMP_WORDS[@]}")
+   fi
+   cidx=$((${#words[@]} - 1))
+   cur="${words[cidx]}"
+   prev=""
+   [ "$cidx" -gt 0 ] && prev="${words[cidx-1]}"
 
    opts="-h -H -t -T -r -q -j -w -x -V --help --hosts --tags --all-tags
          --report --query --json --html --tsv --csv --header --sort --count
@@ -176,8 +219,8 @@ host" "" "$cur"
 
    # Rebuild the expression tokens by dropping options and their arguments, so
    # the position stays correct after something like "eq -r fqdn <TAB>".
-   for ((i = 1; i < COMP_CWORD; i++)); do
-      word="${COMP_WORDS[i]}"
+   for ((i = 1; i < cidx; i++)); do
+      word="${words[i]}"
       [[ "$word" == --*=* ]] && continue
       if [[ " $value_opts " == *" $word "* ]]; then
          i=$((i + 1))
