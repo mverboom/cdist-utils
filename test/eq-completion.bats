@@ -27,6 +27,13 @@ complete_eq() {
    return 0
 }
 
+# Emulate what readline does when ':' is in COMP_WORDBREAKS: it replaces only
+# the text after the last colon with the selected candidate. This is the rule
+# the candidates must satisfy to appear correctly on the command line.
+colon_insert() {
+   printf '%s' "${COMP_LINE%:*}:$1"
+}
+
 @test "fresh word offers explorer names and options" {
    complete_eq ""
    [[ " ${COMPREPLY[*]} " == *" distr "* ]]
@@ -73,6 +80,19 @@ complete_eq() {
 @test "field modifiers complete after a chained modifier" {
    complete_eq -r "packages:~^nginx:"
    [[ " ${COMPREPLY[*]} " == *" f1 "* ]]
+}
+
+@test "selecting a modifier does not duplicate the field prefix" {
+   complete_eq -r "packages:"
+   [ "${#COMPREPLY[@]}" -ge 1 ]
+   [ "$(colon_insert "${COMPREPLY[0]}")" = "eq -r packages:${COMPREPLY[0]}" ]
+   [[ "$(colon_insert "${COMPREPLY[0]}")" != *"packages:packages"* ]]
+}
+
+@test "selecting a field after a colon and comma keeps one prefix" {
+   complete_eq -r "packages:~gcc,fq"
+   [ "${COMPREPLY[*]}" = "~gcc,fqdn" ]
+   [ "$(colon_insert "${COMPREPLY[0]}")" = "eq -r packages:~gcc,fqdn" ]
 }
 
 @test "modifiers are prefixed when the colon is not a word break" {

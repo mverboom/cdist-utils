@@ -80,16 +80,9 @@ _eq_reply_annotated() {
       awk -v pre="$prefix" '{print pre $0}')
 }
 
-# Complete the modifiers after the last colon of a field spec. bash treats ':'
-# as a word break, so readline only replaces the part after the last colon:
-# in that case return the bare modifiers and suppress the trailing space.
+# Complete the modifiers after the last colon of a field spec.
 _eq_complete_modifiers() {
    local cur="$1"
-   if [[ "${COMP_WORDBREAKS:-}" == *:* ]]; then
-      _eq_reply_annotated "$(_eq_complete_call modifiers)" "" "${cur##*:}"
-      compopt -o nospace 2> /dev/null || true
-      return
-   fi
    _eq_reply_annotated "$(_eq_complete_call modifiers)" "${cur%:*}:" \
       "${cur##*:}"
 }
@@ -107,6 +100,8 @@ _eq_complete_fields() {
    if [[ "$fieldspec" == *:* ]]; then
       base="${fieldspec%%:*}"
       if [[ " $fieldlist " == *" $base "* ]]; then
+         # Do not append a space: more modifiers usually follow.
+         compopt -o nospace 2> /dev/null || true
          _eq_complete_modifiers "$cur"
          return
       fi
@@ -141,7 +136,7 @@ _eq_split_line() {
    _EQ_LINE_WORDS+=("$word")
 }
 
-_eq_completions() {
+_eq_completions_impl() {
    local cur prev base opts flags value_opts fields_annotated
    local binary_ops unary_ops logic
    local -a fields expr words
@@ -160,6 +155,7 @@ _eq_completions() {
    fi
    cidx=$((${#words[@]} - 1))
    cur="${words[cidx]}"
+   _EQ_CUR="$cur"
    prev=""
    [ "$cidx" -gt 0 ] && prev="${words[cidx-1]}"
 
@@ -284,6 +280,24 @@ $fields_annotated" "" "$cur"
 
    # The last token is a field: complete the operators with their help.
    _eq_reply_annotated "$(_eq_complete_call operators)" "" "$cur"
+}
+
+# bash replaces only the text after the last ':' (':' is in COMP_WORDBREAKS), so
+# strip everything up to and including the last colon from the candidates.
+# This keeps candidates relative to the point readline will replace.
+_eq_trim_colon() {
+   local cur="$1" colon_prefix i
+   [[ "${COMP_WORDBREAKS:-}" == *:* ]] || return 0
+   [[ "$cur" == *:* ]] || return 0
+   colon_prefix="${cur%:*}:"
+   for i in "${!COMPREPLY[@]}"; do
+      COMPREPLY[i]="${COMPREPLY[i]#"$colon_prefix"}"
+   done
+}
+
+_eq_completions() {
+   _eq_completions_impl
+   _eq_trim_colon "${_EQ_CUR:-}"
 }
 
 complete -F _eq_completions eq
