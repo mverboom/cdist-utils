@@ -45,12 +45,40 @@ _eq_complete_modifiers() {
    local cur="$1"
    local prefix="${cur%:*}:" rest="${cur##*:}" matches match
    # Tilde is not passed to compgen: it would be expanded to $HOME.
-   local mods="f1 f2 f3 l1 l2 trim lower upper sort unique"
+   local mods="f1 f2 f3 f4 f5 l1 l2 l3 trim lower upper sort unique"
    matches="$(compgen -W "$mods" -- "$rest" || true)"
    COMPREPLY=()
    if [[ "$rest" == "" || "$rest" == "~" ]]; then
       COMPREPLY+=("${prefix}~")
    fi
+   for match in $matches; do
+      COMPREPLY+=("${prefix}${match}")
+   done
+}
+
+# Complete a field spec, honouring an optional comma separated list prefix and
+# the : modifiers of the last field, for example "-r fqdn,packages:<TAB>".
+_eq_complete_fields() {
+   local cur="$1" wordlist="$2"
+   local prefix="" fieldspec base matches match
+   if [[ "$cur" == *,* ]]; then
+      prefix="${cur%,*},"
+      fieldspec="${cur##*,}"
+   else
+      fieldspec="$cur"
+   fi
+   if [[ "$fieldspec" == *:* ]]; then
+      base="${fieldspec%%:*}"
+      if [[ " $wordlist " == *" $base "* ]]; then
+         _eq_complete_modifiers "$fieldspec"
+         for match in "${!COMPREPLY[@]}"; do
+            COMPREPLY[match]="${prefix}${COMPREPLY[match]}"
+         done
+         return
+      fi
+   fi
+   matches="$(compgen -W "$wordlist" -- "$fieldspec" || true)"
+   COMPREPLY=()
    for match in $matches; do
       COMPREPLY+=("${prefix}${match}")
    done
@@ -85,9 +113,10 @@ _eq_completions() {
    fi
 
    if [[ "$cur" == *:* ]]; then
-      base="${cur%%:*}"
+      base="${cur##*,}"
+      base="${base%%:*}"
       if [[ " ${fields[*]} " == *" $base "* ]]; then
-         _eq_complete_modifiers "$cur"
+         _eq_complete_fields "$cur" "${fields[*]}"
          return
       fi
    fi
@@ -95,7 +124,7 @@ _eq_completions() {
    # Completing the value of an option.
    case "$prev" in
    -r | --report)
-      _eq_complete_list "${fields[*]}" "$cur"
+      _eq_complete_fields "$cur" "${fields[*]}"
       return
       ;;
    -H | --hosts)
@@ -107,7 +136,11 @@ _eq_completions() {
       return
       ;;
    --values | --sort)
-      mapfile -t COMPREPLY < <(compgen -W "${fields[*]} host" -- "$cur")
+      if [[ "$cur" == *:* ]]; then
+         _eq_complete_fields "$cur" "${fields[*]}"
+      else
+         mapfile -t COMPREPLY < <(compgen -W "${fields[*]} host" -- "$cur")
+      fi
       return
       ;;
    -q | --query | --limit)

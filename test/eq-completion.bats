@@ -52,6 +52,24 @@ complete_eq() {
    [[ " ${COMPREPLY[*]} " == *"packages:trim"* ]]
 }
 
+@test "field modifiers complete after a comma in a report list" {
+   complete_eq -r "fqdn,packages:"
+   [[ " ${COMPREPLY[*]} " == *"fqdn,packages:f1"* ]]
+   [[ " ${COMPREPLY[*]} " == *"fqdn,packages:trim"* ]]
+   [[ " ${COMPREPLY[*]} " == *"fqdn,packages:~"* ]]
+}
+
+@test "field modifiers complete in an expression" {
+   complete_eq "packages:"
+   [[ " ${COMPREPLY[*]} " == *"packages:~"* ]]
+   [[ " ${COMPREPLY[*]} " == *"packages:l1"* ]]
+}
+
+@test "field modifiers complete after a chained modifier" {
+   complete_eq -r "packages:~^nginx:"
+   [[ " ${COMPREPLY[*]} " == *"packages:~^nginx:f1"* ]]
+}
+
 @test "field completes the operators" {
    complete_eq distr ""
    [[ " ${COMPREPLY[*]} " == *" =="* ]]
