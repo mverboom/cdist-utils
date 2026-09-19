@@ -89,6 +89,28 @@ complete_eq() {
    [ "${COMPREPLY[*]}" = "debian" ]
 }
 
+@test "fzf menu picks a candidate when enabled" {
+   PATH="$BT_FIXTURE/fzfbins:$PATH"
+   export PATH FZF_PICK=2
+   unset EQ_PLAIN
+   COMP_WORDS=(eq distr "")
+   COMP_CWORD=2
+   COMP_TYPE=TAB
+   _eq_completions
+   [ "${COMPREPLY[*]}" = "ne" ]
+}
+
+@test "fzf menu picks a field value at the operand position" {
+   PATH="$BT_FIXTURE/fzfbins:$PATH"
+   export PATH FZF_PICK=0
+   unset EQ_PLAIN
+   COMP_WORDS=(eq distr == "")
+   COMP_CWORD=3
+   COMP_TYPE=TAB
+   _eq_completions
+   [ "${COMPREPLY[*]}" = "alpine" ]
+}
+
 @test "second Tab prints help descriptions" {
    COMP_WORDS=(eq distr "")
    COMP_CWORD=2

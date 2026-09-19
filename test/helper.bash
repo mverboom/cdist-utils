@@ -83,6 +83,18 @@ EOF
    # The completion calls `eq --complete`, so eq must be on PATH.
    ln -sf "$EQ" "$BT_FIXTURE/bin/eq"
    export PATH="$BT_FIXTURE/bin:$PATH"
+
+   # Tests use the plain completion so they never need a TTY; the fzf path has
+   # its own test with the stub below.
+   export EQ_PLAIN=1
+   mkdir -p "$BT_FIXTURE/fzfbins"
+   cat > "$BT_FIXTURE/fzfbins/fzf" <<'EOF'
+#!/bin/bash
+lines=(); while IFS= read -r line; do lines+=("$line"); done
+printf '%s\n' "${lines[${FZF_PICK:-0}]}"
+exit 0
+EOF
+   chmod +x "$BT_FIXTURE/fzfbins/fzf"
 }
 
 bt_teardown() {

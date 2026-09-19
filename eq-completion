@@ -34,10 +34,18 @@ _eq_complete_list() {
    done
 }
 
+# Use fzf for completion when it is installed. Set EQ_PLAIN=1 (or EQ_FZF=0)
+# to keep the plain completion.
+_eq_use_fzf() {
+   [ -n "${EQ_PLAIN:-}" ] && return 1
+   [ "${EQ_FZF:-1}" = "0" ] && return 1
+   command -v fzf > /dev/null 2>&1
+}
+
 # Set COMPREPLY from "value<TAB>description" lines, filtered by the rest of the
-# word. prefix is prepended to each value. On the second Tab the descriptions
-# are printed to stderr. When EQ_FZF=1 and fzf is available a described menu is
-# shown instead.
+# word. prefix is prepended to each value. With fzf installed a described fuzzy
+# menu is shown (a single match is selected without a menu). Without fzf the
+# descriptions are printed on the second Tab.
 _eq_reply_annotated() {
    local annotated="$1" prefix="${2:-}" rest="${3:-}"
    local filtered picked
@@ -49,20 +57,20 @@ _eq_reply_annotated() {
    COMPREPLY=()
    [ -z "$filtered" ] && return
 
-   if [ "$COMP_TYPE" = "?" ]; then
-      printf '%s\n' "$filtered" | awk -F'\t' -v pre="$prefix" -v n=18 '
-         NF > 1 && $2 != "" {printf "  %-*s %s\n", n, pre $1, $2}' >&2
-   fi
-
-   if [ "${EQ_FZF:-0}" = "1" ] && command -v fzf > /dev/null 2>&1; then
+   if _eq_use_fzf; then
       picked="$(printf '%s\n' "$filtered" | \
          fzf --height=40% --reverse --delimiter="$(printf '\t')" \
-         --with-nth=1,2 --nth=1)" || true
+         --with-nth=1,2 --nth=1 --select-1 --exit-0)" || true
       if [ -n "$picked" ]; then
          mapfile -t COMPREPLY < <(printf '%s\n' "$picked" | cut -f1 | \
             awk -v pre="$prefix" '{print pre $0}')
-         return
       fi
+      return
+   fi
+
+   if [ "$COMP_TYPE" = "?" ]; then
+      printf '%s\n' "$filtered" | awk -F'\t' -v pre="$prefix" -v n=18 '
+         NF > 1 && $2 != "" {printf "  %-*s %s\n", n, pre $1, $2}' >&2
    fi
    mapfile -t COMPREPLY < <(printf '%s\n' "$filtered" | cut -f1 | \
       awk -v pre="$prefix" '{print pre $0}')

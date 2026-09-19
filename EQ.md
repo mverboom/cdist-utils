@@ -283,12 +283,13 @@ Pressing Tab twice prints a description legend for the current candidates, for
 example the meaning of every modifier or operator. There are no dependencies
 for this; bash exposes the second Tab through `COMP_TYPE`.
 
-Setting `EQ_FZF=1` turns the completion into a described fuzzy menu when fzf
-is installed: candidates are shown as `value  description` and fuzzy search
-picks one. Without fzf it silently falls back to the normal behaviour.
+When fzf is installed it is used automatically: candidates are shown as
+`value  description` and fuzzy search picks one. A single match is selected
+without opening a menu. Set `EQ_PLAIN=1` (or `EQ_FZF=0`) to keep the plain
+completion and the second-Tab legend even when fzf is installed.
 
 ```
-export EQ_FZF=1   # described fuzzy menu in completion (needs fzf)
+export EQ_PLAIN=1   # plain completion, no fzf menu
 ```
 
 # BUILDING QUERIES INTERACTIVELY
