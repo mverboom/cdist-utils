@@ -30,7 +30,9 @@ Wrapper around some git commands to make it easier to change versions/upgrade.
 
 Query the explorer output to quickly find systems matching a condition, for
 example `eq -r fqdn 'distr == debian and cpu_cores gt 1'`. See `EQ.md` for the
-full description.
+full description. The bash completion in `eq-completion` offers operator and
+modifier help (press Tab twice) and completes real field values; `eq --build`
+builds a query interactively.
 
 ### cdist-inventory
 

@@ -80,6 +80,8 @@ done
 exit 0
 EOF
    chmod +x "$BT_FIXTURE/bin/cdist"
+   # The completion calls `eq --complete`, so eq must be on PATH.
+   ln -sf "$EQ" "$BT_FIXTURE/bin/eq"
    export PATH="$BT_FIXTURE/bin:$PATH"
 }
 

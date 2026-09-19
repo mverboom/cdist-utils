@@ -78,6 +78,22 @@ Print the explorer names that exist for the selected hosts.
 `--list-tags`
 Print all tags known to the cdist inventory.
 
+`--build`
+Interactively build the query and run it. Uses fzf for the choices when it is
+installed, otherwise a numbered prompt on stdin. Set `EQ_PLAIN=1` to force the
+prompt even when fzf is available.
+
+`--operators`
+Print the operator reference with a description for each operator.
+
+`--modifiers`
+Print the field modifier reference with a description for each modifier.
+
+`--complete <context>`
+Print completion candidates as `value<TAB>description` for the given context
+(`operators`, `logical`, `modifiers`, `fields`, `values`, `hosts` or `tags`).
+This is what the shell completion calls; it is also handy for scripts.
+
 `-x, --debug`
 Print the number of candidate hosts to stderr.
 
@@ -249,6 +265,46 @@ Export everything as JSON for further processing:
 * `-r` is optional, and the tool works without `cdist` when no tags are used.
 * `!=` is deliberately not used; the operator is spelled `ne` so it can never
   be mangled by shell history expansion.
+
+# SHELL COMPLETION
+
+Source `eq-completion` (or install it in your bash completion directory) to
+get context aware completion for queries:
+
+* Explorer field names at the start of an expression, after `[`, `(`, `and`,
+  `or` and `not`, and for `-r`.
+* Operators after a field, with their descriptions.
+* `:` modifiers after a field, for example `packages:~<TAB>`.
+* The real distinct values of a field at the operand position, so
+  `distr == <TAB>` offers `debian`, `alpine`, and so on.
+* `and`/`or`/`not` and closing brackets after a complete comparison.
+
+Pressing Tab twice prints a description legend for the current candidates, for
+example the meaning of every modifier or operator. There are no dependencies
+for this; bash exposes the second Tab through `COMP_TYPE`.
+
+Setting `EQ_FZF=1` turns the completion into a described fuzzy menu when fzf
+is installed: candidates are shown as `value  description` and fuzzy search
+picks one. Without fzf it silently falls back to the normal behaviour.
+
+```
+export EQ_FZF=1   # described fuzzy menu in completion (needs fzf)
+```
+
+# BUILDING QUERIES INTERACTIVELY
+
+`eq --build` walks through field, operator, value and `and`/`or` and then runs
+the assembled query. With fzf installed each step is a fuzzy menu; otherwise a
+numbered prompt is used. The assembled query is printed to stderr so it can be
+copied or refined:
+
+```
+eq --build -r fqdn
+# eq: query: '[' distr == debian ']' and '[' cpu_cores gt 1 ']'
+```
+
+The help text for the operators and modifiers comes from the same tables as
+`eq --operators` and `eq --modifiers`, so there is a single source of truth.
 
 # AUTHOR
 

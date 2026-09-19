@@ -20,6 +20,7 @@ setup() {
 complete_eq() {
    COMP_WORDS=(eq "$@")
    COMP_CWORD=$((${#COMP_WORDS[@]} - 1))
+   COMP_TYPE=TAB
    _eq_completions
    return 0
 }
@@ -77,9 +78,29 @@ complete_eq() {
    [[ " ${COMPREPLY[*]} " == *" exists "* ]]
 }
 
-@test "operand position offers nothing" {
+@test "operand position offers the field values" {
    complete_eq distr == ""
-   [ "${#COMPREPLY[@]}" -eq 0 ]
+   [[ " ${COMPREPLY[*]} " == *" debian "* ]]
+   [[ " ${COMPREPLY[*]} " == *" alpine "* ]]
+}
+
+@test "operand completion filters by prefix" {
+   complete_eq distr == de
+   [ "${COMPREPLY[*]}" = "debian" ]
+}
+
+@test "second Tab prints help descriptions" {
+   COMP_WORDS=(eq distr "")
+   COMP_CWORD=2
+   COMP_TYPE='?'
+   _eq_completions 2> "$BT_FIXTURE/legend"
+   grep -q "exact string match" "$BT_FIXTURE/legend"
+
+   COMP_WORDS=(eq -r packages:)
+   COMP_CWORD=2
+   COMP_TYPE='?'
+   _eq_completions 2> "$BT_FIXTURE/legend"
+   grep -q "whitespace separated field" "$BT_FIXTURE/legend"
 }
 
 @test "after an operand offer close brackets and logic" {

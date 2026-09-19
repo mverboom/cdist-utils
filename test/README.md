@@ -18,5 +18,7 @@ the field modifiers, host/tag selection, deterministic report ordering, valid
 JSON/CSV/HTML output, the missing-data regression, and the error exit codes.
 
 `test/eq-completion.bats` sources `eq-completion` and drives `_eq_completions`
-directly, checking the option, explorer-name, operator, bracket, host, tag and
-field-modifier completion contexts.
+directly, checking the option, explorer-name, operator, bracket, host, tag,
+field-modifier and operand-value completion contexts, plus the second-Tab help
+legend. `test/eq.bats` also covers `--operators`, `--modifiers`, `--complete`
+and the `--build` query builder.

@@ -273,6 +273,49 @@ assert data[0]["note"] == "<b>&\"q\"", data
    [[ "$output" == *"nginx 1.2.3"* ]]
 }
 
+# --- reference, completion and builder -------------------------------------
+
+@test "operators reference lists operators with help" {
+   run "$EQ" --operators
+   [ "$status" -eq 0 ]
+   [[ "$output" == *"exact string match"* ]]
+   [[ "$output" == *"contains"* ]]
+}
+
+@test "modifiers reference lists modifiers with help" {
+   run "$EQ" --modifiers
+   [ "$status" -eq 0 ]
+   [[ "$output" == *"whitespace separated field"* ]]
+   [[ "$output" == *"regular expression"* ]]
+}
+
+@test "complete operators emits value and description" {
+   run "$EQ" --complete operators
+   [ "$status" -eq 0 ]
+   [[ "$output" == *$'contains\tsubstring match'* ]]
+}
+
+@test "complete values lists field values with counts" {
+   run "$EQ" --complete values distr
+   [ "$status" -eq 0 ]
+   [[ "$output" == *$'debian\t2 hosts'* ]]
+   [[ "$output" == *$'alpine\t1 host'* ]]
+}
+
+@test "complete lists static contexts without CDIST_EXPLORE" {
+   run env -u CDIST_EXPLORE "$EQ" --complete logical
+   [ "$status" -eq 0 ]
+   [[ "$output" == *"and"* ]]
+   [[ "$output" == *"negate"* ]]
+}
+
+@test "build assembles and runs a query from input" {
+   run bash -c 'printf "distr\n==\ndebian\nn\n" | EQ_PLAIN=1 "$1" --build -r fqdn' _ "$EQ"
+   [ "$status" -eq 0 ]
+   [[ "$output" == *"h1.example.com"* ]]
+   [[ "$output" == *"h2.example.com"* ]]
+}
+
 # --- errors -----------------------------------------------------------------
 
 @test "unknown operator exits 2" {

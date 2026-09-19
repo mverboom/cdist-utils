@@ -20,6 +20,7 @@ import math
 import os
 import re
 import shlex
+import shutil
 import signal
 import subprocess
 import sys
@@ -29,25 +30,60 @@ EXIT_OK = 0
 EXIT_ERROR = 1
 EXIT_USAGE = 2
 
-# Operators that compare a field against an operand.
-BINARY_OPERATORS = {
-    "=",
-    "==",
-    "eq",
-    "ne",
-    "gt",
-    "ge",
-    "lt",
-    "le",
-    "contains",
-    "icontains",
-    "matches",
-    "startswith",
-    "endswith",
-    "in",
+# Operator help doubles as the source of truth for the operator sets and for
+# completion/reference output.
+OPERATOR_HELP = {
+    "=": "exact string match against any record",
+    "==": "exact string match against any record",
+    "ne": "not equal (the field must exist)",
+    "eq": "numeric equal",
+    "gt": "numeric greater than",
+    "ge": "numeric greater than or equal",
+    "lt": "numeric less than",
+    "le": "numeric less than or equal",
+    "contains": "substring match against any record",
+    "icontains": "case insensitive substring match",
+    "matches": "regular expression match",
+    "startswith": "record starts with the operand",
+    "endswith": "record ends with the operand",
+    "in": "record equals one of a comma separated list",
+    "exists": "the explorer file exists for the host",
+    "empty": "missing, or has no non-empty records",
+    "nonempty": "has at least one non-empty record",
 }
 # Operators that only look at the field itself.
 UNARY_OPERATORS = {"exists", "empty", "nonempty"}
+# Operators that compare a field against an operand.
+BINARY_OPERATORS = set(OPERATOR_HELP) - UNARY_OPERATORS
+
+LOGICAL_HELP = {
+    "and": "both expressions are true",
+    "or": "either expression is true",
+    "not": "negate the next expression",
+}
+
+
+def _ordinal(number: int) -> str:
+    """Return the English ordinal word for a small number."""
+    words = {1: "first", 2: "second", 3: "third", 4: "fourth", 5: "fifth"}
+    return words.get(number, f"{number}th")
+
+
+def _hosts_label(count: int) -> str:
+    """Return '1 host' or 'N hosts'."""
+    return f"{count} host" if count == 1 else f"{count} hosts"
+
+
+MODIFIER_HELP = {
+    **{f"f{i}": f"{_ordinal(i)} whitespace separated field" for i in range(1, 6)},
+    **{f"l{i}": f"{_ordinal(i)} line" for i in range(1, 4)},
+    "~": "keep lines matching a regular expression",
+    "trim": "strip surrounding whitespace",
+    "lower": "lowercase the records",
+    "upper": "uppercase the records",
+    "sort": "sort the records",
+    "unique": "remove duplicate records",
+}
 
 # SI suffixes accepted by numeric comparisons. Binary suffixes add an "i" and
 # use a base of 1024. Lowercase "m" is deliberately not accepted, matching
@@ -387,6 +423,226 @@ def all_tags() -> list[str]:
     return sorted(tags)
 
 
+def explore_root() -> Path | None:
+    """Return $CDIST_EXPLORE when it is a directory, else None."""
+    explore_env = os.environ.get("CDIST_EXPLORE", "")
+    root = Path(explore_env)
+    if not explore_env or not root.is_dir():
+        return None
+    return root
+
+
+def explorer_counts(data: ExplorerData, hosts: list[str]) -> dict[str, int]:
+    """Count how many of the hosts have each explorer file."""
+    counts: dict[str, int] = {}
+    for host in hosts:
+        for entry in (data.root / host).iterdir():
+            if entry.is_file() and not entry.name.startswith("."):
+                counts[entry.name] = counts.get(entry.name, 0) + 1
+    return counts
+
+
+def value_counts(data: ExplorerData, hosts: list[str], spec: str) -> dict[str, int]:
+    """Count how many hosts have each distinct value of a field."""
+    counts: dict[str, int] = {}
+    for host in hosts:
+        for record in set(data.field(host, spec) or []):
+            if record.strip():
+                counts[record] = counts.get(record, 0) + 1
+    return counts
+
+
+def completion_pairs(
+    context: str, extra: list[str], data: ExplorerData | None, hosts: list[str]
+) -> list[tuple[str, str]]:
+    """Return (value, description) pairs for a completion context."""
+    if context == "operators":
+        return list(OPERATOR_HELP.items())
+    if context == "logical":
+        return list(LOGICAL_HELP.items())
+    if context == "modifiers":
+        return list(MODIFIER_HELP.items())
+    if data is None:
+        return []
+    if context == "fields":
+        return [
+            (name, _hosts_label(count))
+            for name, count in sorted(explorer_counts(data, hosts).items())
+        ]
+    if context == "values":
+        field = extra[0] if extra else ""
+        return [
+            (value, _hosts_label(count))
+            for value, count in sorted(value_counts(data, hosts, field).items())
+        ]
+    if context == "hosts":
+        return [(host, "") for host in hosts]
+    if context == "tags":
+        return [(tag, "") for tag in all_tags()]
+    raise QueryError(f"Unknown completion context {context!r}")
+
+
+def run_complete(args: argparse.Namespace) -> int:
+    """Print value<TAB>description completion candidates."""
+    static = args.complete in ("operators", "logical", "modifiers")
+    data = None
+    hosts: list[str] = []
+    if not static:
+        root = explore_root()
+        if root is None:
+            return EXIT_OK
+        data = ExplorerData(root)
+        try:
+            hosts = select_hosts(args, data)
+        except DataError:
+            hosts = data.host_dirs()
+    pairs = completion_pairs(args.complete, list(args.expression), data, hosts)
+    for value, description in pairs:
+        print(f"{value}\t{description}" if description else value)
+    return EXIT_OK
+
+
+def print_reference(mapping: dict[str, str]) -> None:
+    """Print an aligned name/description reference table."""
+    width = max(len(name) for name in mapping) + 2
+    for name, description in mapping.items():
+        print(f"  {name:<{width}}{description}")
+
+
+def _use_fzf() -> bool:
+    """Return True when interactive choices should use fzf."""
+    if os.environ.get("EQ_PLAIN"):
+        return False
+    return shutil.which("fzf") is not None
+
+
+def _fzf_choice(
+    prompt: str, pairs: list[tuple[str, str]], allow_custom: bool
+) -> str | None:
+    """Choose from pairs with fzf, optionally accepting typed text."""
+    lines = "\n".join(
+        f"{value}\t{description}" if description else value
+        for value, description in pairs
+    )
+    command = [
+        "fzf",
+        "--height=40%",
+        "--reverse",
+        "--delimiter=\t",
+        "--with-nth=1,2",
+        "--nth=1",
+        "--print-query",
+        "--prompt",
+        f"{prompt}> ",
+    ]
+    try:
+        result = subprocess.run(
+            command, input=lines, capture_output=True, text=True, check=False
+        )
+    except OSError:
+        return _plain_choice(prompt, pairs, allow_custom)
+    output = result.stdout.splitlines()
+    if not output:
+        return None
+    query = output[0]
+    if len(output) > 1 and output[1].strip():
+        return output[1].split("\t")[0]
+    if allow_custom and query.strip():
+        return query.strip()
+    return None
+
+
+def _plain_choice(
+    prompt: str, pairs: list[tuple[str, str]], allow_custom: bool
+) -> str | None:
+    """Choose from pairs with a numbered prompt, optionally accepting text.
+
+    A literal value always wins, so a numeric operand such as ``1`` is not
+    mistaken for a menu index. Numbers only select an entry for prompts that
+    do not allow custom input (fields and operators).
+    """
+    for index, (value, description) in enumerate(pairs, 1):
+        suffix = f"  - {description}" if description else ""
+        print(f"  {index:>3}) {value}{suffix}", file=sys.stderr)
+    try:
+        answer = input(f"{prompt}> ").strip()
+    except EOFError:
+        return None
+    if not answer:
+        return None
+    if any(value == answer for value, _ in pairs):
+        return answer
+    if not allow_custom and answer.isdigit():
+        index = int(answer)
+        if 1 <= index <= len(pairs):
+            return pairs[index - 1][0]
+    return answer if allow_custom else None
+
+
+def _choose(
+    prompt: str, pairs: list[tuple[str, str]], allow_custom: bool = False
+) -> str | None:
+    """Prompt for a choice, using fzf when available."""
+    if _use_fzf():
+        return _fzf_choice(prompt, pairs, allow_custom)
+    return _plain_choice(prompt, pairs, allow_custom)
+
+
+def _confirm(prompt: str) -> bool:
+    """Ask a yes/no question."""
+    try:
+        answer = input(f"{prompt} [y/N] ").strip().lower()
+    except EOFError:
+        return False
+    return answer in ("y", "yes")
+
+
+def build_query(data: ExplorerData, hosts: list[str]) -> list[str]:
+    """Interactively assemble a query and return it as tokens."""
+    fields = [
+        (name, _hosts_label(count))
+        for name, count in sorted(explorer_counts(data, hosts).items())
+    ]
+    operators = list(OPERATOR_HELP.items())
+    connectors = [("and", LOGICAL_HELP["and"]), ("or", LOGICAL_HELP["or"])]
+    tokens: list[str] = []
+    while True:
+        field = _choose("field", fields)
+        if field is None:
+            raise KeyboardInterrupt
+        operator = _choose("operator", operators)
+        if operator is None:
+            raise KeyboardInterrupt
+        clause = [field, operator]
+        if operator not in UNARY_OPERATORS:
+            operand = _choose(
+                "value",
+                [
+                    (value, _hosts_label(count))
+                    for value, count in sorted(
+                        value_counts(data, hosts, field).items()
+                    )
+                ],
+                allow_custom=True,
+            )
+            if operand is None:
+                raise KeyboardInterrupt
+            clause.append(operand)
+        tokens.extend(["[", *clause, "]"])
+        if not _confirm("add another condition?"):
+            break
+        connector = _choose("combine with", connectors)
+        if connector is None:
+            break
+        tokens.append(connector)
+    return tokens
+
+
+def format_query(tokens: list[str]) -> str:
+    """Format query tokens the way they can be passed to -q."""
+    return " ".join(shlex.quote(token) for token in tokens)
+
+
 def flatten(value: str) -> str:
     """Collapse newlines so a value stays on one line in flat output."""
     return " ".join(value.splitlines()) if "\n" in value else value
@@ -515,6 +771,25 @@ def build_parser() -> argparse.ArgumentParser:
         "--values", metavar="FIELD", help="list distinct values of a field"
     )
     parser.add_argument(
+        "--complete",
+        metavar="CONTEXT",
+        help="print completion candidates: operators, logical, modifiers, "
+        "fields, values, hosts or tags",
+    )
+    parser.add_argument(
+        "--operators", action="store_true", help="print the operator reference"
+    )
+    parser.add_argument(
+        "--modifiers",
+        action="store_true",
+        help="print the field modifier reference",
+    )
+    parser.add_argument(
+        "--build",
+        action="store_true",
+        help="interactively build the query (uses fzf when available)",
+    )
+    parser.add_argument(
         "-x", "--debug", action="store_true", help="print progress to stderr"
     )
     parser.add_argument("-V", "--version", action="version", version="eq (python) 2.0")
@@ -565,6 +840,15 @@ def sort_hosts(
 
 def run(args: argparse.Namespace) -> int:
     """Execute a parsed command line."""
+    if args.complete:
+        return run_complete(args)
+    if args.operators:
+        print_reference(OPERATOR_HELP)
+        return EXIT_OK
+    if args.modifiers:
+        print_reference(MODIFIER_HELP)
+        return EXIT_OK
+
     explore_env = os.environ.get("CDIST_EXPLORE", "")
     explore_root = Path(explore_env)
     if not explore_env or not explore_root.is_dir():
@@ -583,9 +867,13 @@ def run(args: argparse.Namespace) -> int:
     if args.debug:
         print(f"eq: {len(hosts)} candidate hosts", file=sys.stderr)
 
-    tokens = list(args.expression)
-    if args.query:
-        tokens = tokenize_query(args.query) + tokens
+    if args.build:
+        tokens = build_query(data, hosts)
+        print(f"eq: query: {format_query(tokens)}", file=sys.stderr)
+    else:
+        tokens = list(args.expression)
+        if args.query:
+            tokens = tokenize_query(args.query) + tokens
     tree = Parser(tokens).parse()
 
     selected = [host for host in hosts if matches(tree, host, data)]
