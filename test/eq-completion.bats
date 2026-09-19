@@ -105,3 +105,26 @@ complete_eq() {
    [[ " ${COMPREPLY[*]} " == *"tagA"* ]]
    [[ " ${COMPREPLY[*]} " == *"tagB"* ]]
 }
+
+@test "after a completed option value a fresh word offers explorer names" {
+   complete_eq -r fqdn ""
+   [[ " ${COMPREPLY[*]} " == *" distr "* ]]
+   [[ " ${COMPREPLY[*]} " == *" packages "* ]]
+   [[ " ${COMPREPLY[*]} " == *" --report "* ]]
+}
+
+@test "option value completions reset for each value-taking option" {
+   complete_eq -H h1.example.com ""
+   [[ " ${COMPREPLY[*]} " == *" distr "* ]]
+
+   complete_eq --values distr ""
+   [[ " ${COMPREPLY[*]} " == *" distr "* ]]
+}
+
+@test "flags do not shift the expression state" {
+   complete_eq -x ""
+   [[ " ${COMPREPLY[*]} " == *" distr "* ]]
+
+   complete_eq -r fqdn distr ""
+   [[ " ${COMPREPLY[*]} " == *" =="* ]]
+}

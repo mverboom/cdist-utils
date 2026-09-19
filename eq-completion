@@ -41,10 +41,9 @@ _eq_complete_list() {
 # "packages:~<TAB>".
 _eq_complete_modifiers() {
    local cur="$1"
-   local prefix="${cur%:*}:"
+   local prefix="${cur%:*}:" rest="${cur##*:}" matches match
    # Tilde is not passed to compgen: it would be expanded to $HOME.
    local mods="f1 f2 f3 l1 l2 trim lower upper sort unique"
-   local rest="${cur##*:}" matches match
    matches="$(compgen -W "$mods" -- "$rest" || true)"
    COMPREPLY=()
    if [[ "$rest" == "" || "$rest" == "~" ]]; then
@@ -56,15 +55,22 @@ _eq_complete_modifiers() {
 }
 
 _eq_completions() {
-   local cur prev prev2 base fields binary_ops unary_ops logic opts
+   local cur prev base fields
+   local opts flags value_opts binary_ops unary_ops logic
+   local -a expr
+   local i word last second_last
+
    cur="${COMP_WORDS[COMP_CWORD]}"
    prev="${COMP_WORDS[COMP_CWORD-1]}"
-   prev2="${COMP_WORDS[COMP_CWORD-2]:-}"
    COMPREPLY=()
 
    opts="-h -H -t -T -r -q -j -w -x -V --help --hosts --tags --all-tags
          --report --query --json --html --tsv --csv --header --sort --count
          --limit --list-explorers --list-tags --values --debug --version"
+   flags="-h --help -j --json -w --html --tsv --csv --header --count
+          --list-explorers --list-tags -x --debug -V --version"
+   value_opts="-r --report -H --hosts -t --tags -T --all-tags -q --query
+               --values --sort --limit"
    binary_ops="= == ne eq gt ge lt le contains icontains matches startswith
                endswith in"
    unary_ops="exists empty nonempty"
@@ -84,61 +90,86 @@ _eq_completions() {
       fi
    fi
 
+   # Completing the value of an option.
    case "$prev" in
-   -t | --tags | -T | --all-tags)
-      _eq_complete_list "$(_eq_tag_names)" "$cur"
+   -r | --report)
+      _eq_complete_list "${fields[*]}" "$cur"
       return
       ;;
    -H | --hosts)
       _eq_complete_list "$(_eq_host_names)" "$cur"
       return
       ;;
-   -r | --report)
-      _eq_complete_list "${fields[*]}" "$cur"
+   -t | --tags | -T | --all-tags)
+      _eq_complete_list "$(_eq_tag_names)" "$cur"
       return
       ;;
    --values | --sort)
       mapfile -t COMPREPLY < <(compgen -W "${fields[*]} host" -- "$cur")
       return
       ;;
-   -q | --query)
+   -q | --query | --limit)
       return
       ;;
    esac
 
-   # prev is the command name itself for the first word. It collides with the
-   # eq operator, so skip the token checks in that case.
-   if (( COMP_CWORD > 1 )); then
-      if [[ " $unary_ops " == *" $prev "* ]]; then
-         mapfile -t COMPREPLY < <(compgen -W "] ) and or" -- "$cur")
-         return
+   # Rebuild the expression tokens by dropping options and their arguments.
+   # This keeps the position detection correct for things like
+   # "eq -r fqdn <TAB>", where a fresh word starts after the option value.
+   for ((i = 1; i < COMP_CWORD; i++)); do
+      word="${COMP_WORDS[i]}"
+      if [[ "$word" == --*=* ]]; then
+         continue
       fi
-      if (( COMP_CWORD > 2 )) && [[ " $binary_ops " == *" $prev2 "* ]]; then
-         mapfile -t COMPREPLY < <(compgen -W "] ) and or" -- "$cur")
-         return
+      if [[ " $value_opts " == *" $word "* ]]; then
+         i=$((i + 1))
+         continue
       fi
-      if [[ " $logic " == *" $prev "* ]]; then
-         mapfile -t COMPREPLY < <(compgen -W "[ ( ${fields[*]}" -- "$cur")
-         return
+      if [[ " $flags " == *" $word "* ]]; then
+         continue
       fi
-      if [[ "$prev" == "]" || "$prev" == ")" ]]; then
-         mapfile -t COMPREPLY < <(compgen -W "$logic" -- "$cur")
-         return
-      fi
-      if [[ "$prev" == "[" || "$prev" == "(" ]]; then
-         mapfile -t COMPREPLY < <(compgen -W "${fields[*]}" -- "$cur")
-         return
-      fi
-      if [[ " ${fields[*]} " == *" ${prev%%:*} "* ]]; then
-         mapfile -t COMPREPLY < <(compgen -W "$binary_ops $unary_ops" -- "$cur")
-         return
-      fi
-      if [[ " $binary_ops " == *" $prev "* ]]; then
-         return
-      fi
+      expr+=("$word")
+   done
+
+   # No expression yet: start of a query.
+   if [ "${#expr[@]}" -eq 0 ]; then
+      mapfile -t COMPREPLY < <(compgen -W "[ ( ${fields[*]} $opts" -- "$cur")
+      return
    fi
 
-   mapfile -t COMPREPLY < <(compgen -W "[ ( ${fields[*]} $opts" -- "$cur")
+   last="${expr[-1]}"
+   second_last=""
+   if [ "${#expr[@]}" -ge 2 ]; then
+      second_last="${expr[-2]}"
+   fi
+
+   # After an operand (the token before the last was a binary operator).
+   if [ "${#expr[@]}" -ge 2 ] && [[ " $binary_ops " == *" $second_last "* ]]; then
+      mapfile -t COMPREPLY < <(compgen -W "] ) and or" -- "$cur")
+      return
+   fi
+   if [[ " $binary_ops " == *" $last "* ]]; then
+      return
+   fi
+   if [[ " $unary_ops " == *" $last "* ]]; then
+      mapfile -t COMPREPLY < <(compgen -W "] ) and or" -- "$cur")
+      return
+   fi
+   if [[ " $logic " == *" $last "* ]]; then
+      mapfile -t COMPREPLY < <(compgen -W "[ ( ${fields[*]}" -- "$cur")
+      return
+   fi
+   if [[ "$last" == "]" || "$last" == ")" ]]; then
+      mapfile -t COMPREPLY < <(compgen -W "$logic" -- "$cur")
+      return
+   fi
+   if [[ "$last" == "[" || "$last" == "(" ]]; then
+      mapfile -t COMPREPLY < <(compgen -W "${fields[*]}" -- "$cur")
+      return
+   fi
+
+   # The last token is a field: complete the operators.
+   mapfile -t COMPREPLY < <(compgen -W "$binary_ops $unary_ops" -- "$cur")
 }
 
 complete -F _eq_completions eq
