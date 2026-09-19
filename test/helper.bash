@@ -35,6 +35,11 @@ bt_setup() {
 
    printf '%s\n' '<b>&"q"' > "$CDIST_EXPLORE/h1.example.com/note"
 
+   # A versioned explore tree contains a .git directory; it must never be
+   # treated as a host.
+   mkdir -p "$CDIST_EXPLORE/.git"
+   printf 'ref: refs/heads/master\n' > "$CDIST_EXPLORE/.git/HEAD"
+
    # Fake cdist. h1 carries tagA,tagB, h2 carries tagB and h3 carries tagC.
    # `cdist inventory list -H` lists hosts, `-t` does any-tag, `-a -t` all-tag.
    cat > "$BT_FIXTURE/bin/cdist" <<'EOF'

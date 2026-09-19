@@ -149,6 +149,15 @@ teardown_file() {
    [ "$output" = $'h1.example.com\nh2.example.com' ]
 }
 
+@test "hidden directories like .git are not treated as hosts" {
+   run "$EQ" --count
+   [ "$status" -eq 0 ]
+   [ "$output" = "3" ]
+   run "$EQ"
+   [ "$status" -eq 0 ]
+   [ "$output" = $'h1.example.com\nh2.example.com\nh3.example.com' ]
+}
+
 @test "header is printed on request" {
    run "$EQ" --header --tsv -r fqdn,distr distr == debian
    [ "$status" -eq 0 ]

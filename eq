@@ -146,8 +146,16 @@ class ExplorerData:
         self._cache: dict[tuple[str, str], list[str] | None] = {}
 
     def host_dirs(self) -> list[str]:
-        """Return the sorted names of all hosts that have explorer output."""
-        return sorted(entry.name for entry in self.root.iterdir() if entry.is_dir())
+        """Return the sorted names of all hosts that have explorer output.
+
+        Hidden entries such as the ``.git`` directory of a versioned explore
+        tree are not hosts and are ignored.
+        """
+        return sorted(
+            entry.name
+            for entry in self.root.iterdir()
+            if entry.is_dir() and not entry.name.startswith(".")
+        )
 
     def has_host(self, host: str) -> bool:
         """Return True if the host has an explorer output directory."""
