@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import html
+import json
 import subprocess
 import sys
 import urllib.parse
@@ -49,9 +50,29 @@ code {{ background: #f4f4f4; padding: 0.1rem 0.3rem; }}
 """
 
 
-def builder_url(action: str) -> str:
+def load_runner() -> tuple[str, str, str]:
+    """Return (runner name, builder label, run label) from eq.json.
+
+    A deep-link must use the ``values_ui_mapping`` labels, not the raw list
+    values: script-server keeps the mapped user value in the form and maps it
+    back to the script value for the command and the include path.
+    """
+    config = json.loads((HERE / "eq.json").read_text())
+    labels: dict[str, str] = {}
+    for parameter in config.get("parameters", []):
+        if parameter.get("name") == "Action":
+            labels = parameter.get("values_ui_mapping", {})
+    return (
+        config.get("name", RUNNER),
+        labels.get("builder", "builder"),
+        labels.get("run", "run"),
+    )
+
+
+def builder_url(runner: str, action_label: str) -> str:
     """Return a top-level hash route for this runner with the action pinned."""
-    name = urllib.parse.quote(RUNNER, safe="")
+    name = urllib.parse.quote(runner, safe="")
+    action = urllib.parse.quote(action_label, safe="")
     return f"#/{name}?Action={action}"
 
 
@@ -63,8 +84,13 @@ def render_builder() -> int:
     if result.returncode != 0:
         sys.stderr.write(result.stderr or "eq --catalog failed")
         return result.returncode
-    data = result.stdout.strip().replace("</", "<\\/")
-    page = TEMPLATE.read_text().replace("__EQ_CATALOG__", data)
+    runner, action_builder, action_run = load_runner()
+    data = json.loads(result.stdout)
+    data["runner"] = runner
+    data["actionBuilder"] = action_builder
+    data["actionRun"] = action_run
+    payload = json.dumps(data, ensure_ascii=False).replace("</", "<\\/")
+    page = TEMPLATE.read_text().replace("__EQ_CATALOG__", payload)
     sys.stdout.write(page)
     return 0
 
@@ -74,6 +100,7 @@ def render_query(eq_args: list[str]) -> int:
     result = subprocess.run(
         ["eq", "-w", *eq_args], capture_output=True, text=True, timeout=600
     )
+    runner, action_builder, _ = load_runner()
     if result.returncode == 0:
         body = result.stdout
     else:
@@ -82,7 +109,7 @@ def render_query(eq_args: list[str]) -> int:
         ) + "</pre>"
     sys.stdout.write(
         RESULT_PAGE.format(
-            back=html.escape(builder_url("builder"), quote=True),
+            back=html.escape(builder_url(runner, action_builder), quote=True),
             command=html.escape("eq -w " + " ".join(eq_args)),
             body=body,
         )

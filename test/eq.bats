@@ -313,8 +313,7 @@ assert data[0]["note"] == "<b>&\"q\"", data
    [ "$(printf '%s\n' "$output" | wc -l)" -eq 1 ]
 }
 
-@test "catalog emits JSON with fields, operators and limited samples" {
-   run "$EQ" --catalog --limit-values 2
+@test "catalog emits JSON with fields, operators and limited samples" {   run "$EQ" --catalog --limit-values 2
    [ "$status" -eq 0 ]
    echo "$output" | python3 -c '
 import json, sys
@@ -327,6 +326,22 @@ assert all(len(f["values"]) <= 2 for f in cat["fields"])
 assert cat["hosts"], cat["hosts"]
 assert cat["fields"][0]["values"][0]["value"]
 '
+}
+
+@test "eq-ss builder injects the UI-mapped action labels" {
+   run "$EQ_ROOT/scriptserver/eq-ss" --action builder
+   [ "$status" -eq 0 ]
+   [[ "$output" == *'"runner": "Explorer Query"'* ]]
+   [[ "$output" == *'"actionBuilder": "Query builder"'* ]]
+   [[ "$output" == *'"actionRun": "Run query"'* ]]
+   [[ "$output" != *'__EQ_CATALOG__'* ]]
+}
+
+@test "eq-ss run page links back with the action UI label" {
+   run "$EQ_ROOT/scriptserver/eq-ss" --action run -r fqdn -q 'distr == debian'
+   [ "$status" -eq 0 ]
+   [[ "$output" == *'Action=Query%20builder'* ]]
+   [[ "$output" == *'<td>h1.example.com</td>'* ]]
 }
 
 @test "complete lists static contexts without CDIST_EXPLORE" {

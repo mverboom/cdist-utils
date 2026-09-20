@@ -62,6 +62,12 @@ No service restart is needed for parameter/value changes; restart
 
 ## Notes / limits
 
+- **UI-mapped labels in deep-links.** script-server keeps the mapped
+  `values_ui_mapping` label as the form value and maps it back to the script
+  value for the command and the include path. A deep-link must therefore use
+  the label (`Action=Run%20query`), not the raw value (`Action=run`), otherwise
+  the form shows "Obsolete value". `eq-ss` reads the labels from `eq.json` and
+  injects them into the builder, so the runner JSON stays the source of truth.
 - The builder cannot execute anything itself; it only prefills the runner form,
   so a run needs one more click on **Run query** in the form.
 - `X-Frame-Options: DENY` is set on script-server responses, so the app cannot

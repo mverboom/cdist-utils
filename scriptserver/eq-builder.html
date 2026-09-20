@@ -62,7 +62,9 @@ window.EQ_CATALOG = __EQ_CATALOG__;
   var byName = {};
   cat.fields.forEach(function (f) { byName[f.name] = f; });
   var UNARY = new Set(["exists", "empty", "nonempty"]);
-  var RUNNER = "Explorer Query";
+  var RUNNER = cat.runner || "Explorer Query";
+  // The deep-link must use the Action UI label, not the raw list value.
+  var ACTION_RUN = cat.actionRun || "run";
 
   var conditions = [];
   var connectors = [];
@@ -216,7 +218,7 @@ window.EQ_CATALOG = __EQ_CATALOG__;
   }
 
   function buildHash() {
-    var parts = [param("Action", "run"), param("Query", buildQuery())];
+    var parts = [param("Action", ACTION_RUN), param("Query", buildQuery())];
     [["Report", "report"], ["Hosts", "hosts"],
      ["Tags", "tags"], ["AllTags", "alltags"]].forEach(function (pair) {
       selected(pair[1]).forEach(function (v) {
