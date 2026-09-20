@@ -302,8 +302,7 @@ assert data[0]["note"] == "<b>&\"q\"", data
    [[ "$output" == *$'alpine\t1 host'* ]]
 }
 
-@test "complete values respects the limit for previews" {
-   run "$EQ" --complete values distr --limit 1
+@test "complete values respects the limit for previews" {   run "$EQ" --complete values distr --limit 1
    [ "$status" -eq 0 ]
    [ "$(printf '%s\n' "$output" | wc -l)" -eq 1 ]
 }
@@ -312,6 +311,22 @@ assert data[0]["note"] == "<b>&\"q\"", data
    run "$EQ" --values distr --limit 1
    [ "$status" -eq 0 ]
    [ "$(printf '%s\n' "$output" | wc -l)" -eq 1 ]
+}
+
+@test "catalog emits JSON with fields, operators and limited samples" {
+   run "$EQ" --catalog --limit-values 2
+   [ "$status" -eq 0 ]
+   echo "$output" | python3 -c '
+import json, sys
+cat = json.load(sys.stdin)
+names = [f["name"] for f in cat["fields"]]
+assert "distr" in names, names
+assert "fqdn" in names, names
+assert any(o["name"] == "contains" for o in cat["operators"])
+assert all(len(f["values"]) <= 2 for f in cat["fields"])
+assert cat["hosts"], cat["hosts"]
+assert cat["fields"][0]["values"][0]["value"]
+'
 }
 
 @test "complete lists static contexts without CDIST_EXPLORE" {

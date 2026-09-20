@@ -1,0 +1,56 @@
+{
+  "hidden": true,
+  "parameters": [
+    {
+      "name": "Report",
+      "param": "-r",
+      "type": "multiselect",
+      "description": "Explorer fields to report for each matching host. Empty prints the matching hostnames.",
+      "values": {
+        "script": "sudo -u cdist -i bash -c \"eq --complete fields | cut -f1\"",
+        "shell": false
+      },
+      "multiselect_argument_type": "single_argument"
+    },
+    {
+      "name": "Hosts",
+      "param": "-H",
+      "type": "multiselect",
+      "description": "Limit the query to these hosts. Leave empty to use every host.",
+      "values": {
+        "script": "sudo -u cdist -i eq --complete hosts",
+        "shell": false
+      },
+      "multiselect_argument_type": "single_argument"
+    },
+    {
+      "name": "Tags",
+      "param": "-t",
+      "type": "multiselect",
+      "description": "Hosts carrying any of these cdist inventory tags.",
+      "values": {
+        "script": "sudo -u cdist -i eq --complete tags",
+        "shell": false
+      },
+      "multiselect_argument_type": "single_argument"
+    },
+    {
+      "name": "AllTags",
+      "param": "-T",
+      "type": "multiselect",
+      "description": "Hosts carrying all of these cdist inventory tags.",
+      "values": {
+        "script": "sudo -u cdist -i eq --complete tags",
+        "shell": false
+      },
+      "multiselect_argument_type": "single_argument"
+    },
+    {
+      "name": "Query",
+      "param": "-q",
+      "type": "text",
+      "required": true,
+      "description": "The expression to run, e.g. 'distro == debian and cpu_cores gt 1'. Usually prefilled by the query builder."
+    }
+  ]
+}

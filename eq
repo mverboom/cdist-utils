@@ -504,6 +504,36 @@ def run_complete(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def build_catalog(data: ExplorerData, hosts: list[str], value_limit: int) -> dict:
+    """Return the data the interactive query builder needs as a dict."""
+    fields = []
+    for name, count in sorted(explorer_counts(data, hosts).items()):
+        values = [
+            {"value": value, "hosts": host_count}
+            for value, host_count in sorted(
+                value_counts(data, hosts, name).items()
+            )[:value_limit]
+        ]
+        fields.append({"name": name, "hosts": count, "values": values})
+    try:
+        tags = all_tags()
+    except DataError:
+        tags = []
+    return {
+        "fields": fields,
+        "hosts": hosts,
+        "tags": tags,
+        "operators": [
+            {"name": name, "description": description}
+            for name, description in OPERATOR_HELP.items()
+        ],
+        "modifiers": [
+            {"name": name, "description": description}
+            for name, description in MODIFIER_HELP.items()
+        ],
+    }
+
+
 def print_reference(mapping: dict[str, str]) -> None:
     """Print an aligned name/description reference table."""
     width = max(len(name) for name in mapping) + 2
@@ -773,6 +803,18 @@ def build_parser() -> argparse.ArgumentParser:
         "--values", metavar="FIELD", help="list distinct values of a field"
     )
     parser.add_argument(
+        "--catalog",
+        action="store_true",
+        help="print the query builder catalog as JSON",
+    )
+    parser.add_argument(
+        "--limit-values",
+        type=int,
+        default=12,
+        metavar="N",
+        help="sample values per field in the catalog (default 12)",
+    )
+    parser.add_argument(
         "--complete",
         metavar="CONTEXT",
         help="print completion candidates: operators, logical, modifiers, "
@@ -868,6 +910,11 @@ def run(args: argparse.Namespace) -> int:
     hosts = select_hosts(args, data)
     if args.debug:
         print(f"eq: {len(hosts)} candidate hosts", file=sys.stderr)
+
+    if args.catalog:
+        catalog = build_catalog(data, hosts, args.limit_values)
+        print(json.dumps(catalog, ensure_ascii=False))
+        return EXIT_OK
 
     if args.build:
         tokens = build_query(data, hosts)

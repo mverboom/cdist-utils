@@ -1,0 +1,253 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Explorer Query builder</title>
+<style>
+  body { font-family: system-ui, sans-serif; margin: 1rem; color: #222; }
+  h2 { margin: 0 0 .75rem; }
+  .condition, .connector { margin: .25rem 0; display: flex; gap: .4rem;
+                           align-items: center; flex-wrap: wrap; }
+  .connector { margin-left: 1.5rem; }
+  .condition select, .condition input[type=text] { padding: .2rem; }
+  .condition input[type=text] { min-width: 14rem; }
+  button, .button { padding: .25rem .6rem; }
+  #run { display: inline-block; margin-top: .75rem; padding: .4rem .9rem;
+         background: #2b6cb0; color: #fff; text-decoration: none;
+         border-radius: 4px; }
+  #run:hover { background: #245a94; }
+  #preview { background: #f4f4f4; padding: .5rem; white-space: pre-wrap;
+             font-family: monospace; }
+  fieldset { margin: .5rem 0; }
+  select[multiple] { min-width: 16rem; }
+  .hint { color: #666; font-size: .9em; }
+</style>
+</head>
+<body>
+<h2>Explorer Query builder</h2>
+<p class="hint">Pick conditions, then <em>Run query</em> to open the runner with
+everything prefilled.</p>
+
+<div id="conditions"></div>
+<button type="button" id="add">Add condition</button>
+
+<fieldset>
+  <legend>Report fields</legend>
+  <select id="report" multiple size="6"></select>
+</fieldset>
+
+<fieldset>
+  <legend>Limit to hosts <span class="hint">(optional, none = all)</span></legend>
+  <select id="hosts" multiple size="4"></select>
+</fieldset>
+
+<fieldset>
+  <legend>Inventory tags <span class="hint">(optional)</span></legend>
+  any:
+  <select id="tags" multiple size="4"></select>
+  &nbsp;all:
+  <select id="alltags" multiple size="4"></select>
+</fieldset>
+
+<p>Query:</p>
+<pre id="preview"></pre>
+<a id="run" target="_top">Run query</a>
+
+<script>
+window.EQ_CATALOG = __EQ_CATALOG__;
+(function () {
+  "use strict";
+  var cat = window.EQ_CATALOG ||
+    {fields: [], hosts: [], tags: [], operators: [], modifiers: []};
+  var byName = {};
+  cat.fields.forEach(function (f) { byName[f.name] = f; });
+  var UNARY = new Set(["exists", "empty", "nonempty"]);
+  var RUNNER = "Explorer Query";
+
+  var conditions = [];
+  var connectors = [];
+
+  function initCondition() {
+    return {field: cat.fields.length ? cat.fields[0].name : "",
+            op: "==", value: "", negate: false};
+  }
+  if (cat.fields.length) { conditions.push(initCondition()); }
+
+  var conditionsEl = document.getElementById("conditions");
+  var previewEl = document.getElementById("preview");
+  var runEl = document.getElementById("run");
+
+  function opt(value, label, selected) {
+    var o = document.createElement("option");
+    o.value = value;
+    o.textContent = label;
+    if (selected) { o.selected = true; }
+    return o;
+  }
+
+  function fieldSelect(cond) {
+    var sel = document.createElement("select");
+    cat.fields.forEach(function (f) {
+      sel.appendChild(opt(f.name, f.name + " (" + f.hosts + ")", f.name === cond.field));
+    });
+    sel.onchange = function () { cond.field = sel.value; render(); };
+    return sel;
+  }
+
+  function operatorSelect(cond) {
+    var sel = document.createElement("select");
+    cat.operators.forEach(function (op) {
+      sel.appendChild(opt(op.name,
+        op.name + " \u2014 " + op.description, op.name === cond.op));
+    });
+    sel.onchange = function () { cond.op = sel.value; render(); };
+    return sel;
+  }
+
+  function valueInput(cond) {
+    var input = document.createElement("input");
+    input.type = "text";
+    input.value = cond.value;
+    input.placeholder = "value";
+    var listId = "values-" + Math.random().toString(36).slice(2);
+    var list = document.createElement("datalist");
+    list.id = listId;
+    var f = byName[cond.field];
+    if (f) {
+      f.values.forEach(function (v) {
+        var o = document.createElement("option");
+        o.value = v.value;
+        o.label = v.hosts + " hosts";
+        list.appendChild(o);
+      });
+    }
+    input.setAttribute("list", listId);
+    input.oninput = function () { cond.value = input.value; update(); };
+    var wrap = document.createElement("span");
+    wrap.appendChild(input);
+    wrap.appendChild(list);
+    return wrap;
+  }
+
+  function connectorSelect(index) {
+    var sel = document.createElement("select");
+    ["and", "or"].forEach(function (c) {
+      sel.appendChild(opt(c, c, connectors[index] === c));
+    });
+    sel.onchange = function () { connectors[index] = sel.value; update(); };
+    return sel;
+  }
+
+  function render() {
+    conditionsEl.textContent = "";
+    conditions.forEach(function (cond, i) {
+      if (i > 0) {
+        if (!connectors[i - 1]) { connectors[i - 1] = "and"; }
+        var cwrap = document.createElement("div");
+        cwrap.className = "connector";
+        cwrap.appendChild(connectorSelect(i - 1));
+        conditionsEl.appendChild(cwrap);
+      }
+      var row = document.createElement("div");
+      row.className = "condition";
+      var neg = document.createElement("label");
+      var negBox = document.createElement("input");
+      negBox.type = "checkbox";
+      negBox.checked = cond.negate;
+      negBox.onchange = function () { cond.negate = negBox.checked; update(); };
+      neg.appendChild(negBox);
+      neg.appendChild(document.createTextNode(" not"));
+      row.appendChild(neg);
+      row.appendChild(fieldSelect(cond));
+      row.appendChild(operatorSelect(cond));
+      if (!UNARY.has(cond.op)) { row.appendChild(valueInput(cond)); }
+      var rm = document.createElement("button");
+      rm.type = "button";
+      rm.textContent = "remove";
+      rm.onclick = function () {
+        conditions.splice(i, 1);
+        connectors.splice(Math.max(i - 1, 0), 1);
+        render();
+      };
+      row.appendChild(rm);
+      conditionsEl.appendChild(row);
+    });
+    update();
+  }
+
+  function condTokens(c) {
+    var t = ["["];
+    if (UNARY.has(c.op)) {
+      t.push(c.field, c.op);
+    } else {
+      t.push(c.field, c.op, c.value);
+    }
+    t.push("]");
+    return c.negate ? ["not"].concat(t) : t;
+  }
+
+  function buildTokens() {
+    if (!conditions.length) { return []; }
+    var acc = condTokens(conditions[0]);
+    for (var i = 1; i < conditions.length; i++) {
+      acc = ["["].concat(acc, [connectors[i - 1] || "and"],
+                         condTokens(conditions[i]), ["]"]);
+    }
+    return acc;
+  }
+
+  function quote(t) {
+    return /[\s'"]/.test(t) ? "'" + t.replace(/'/g, "'\\''") + "'" : t;
+  }
+
+  function buildQuery() {
+    return buildTokens().map(quote).join(" ");
+  }
+
+  function selected(id) {
+    var sel = document.getElementById(id);
+    return Array.prototype.filter.call(sel.options, function (o) {
+      return o.selected;
+    }).map(function (o) { return o.value; });
+  }
+
+  function param(name, value) {
+    return encodeURIComponent(name) + "=" + encodeURIComponent(value);
+  }
+
+  function buildHash() {
+    var parts = [param("Action", "run"), param("Query", buildQuery())];
+    [["Report", "report"], ["Hosts", "hosts"],
+     ["Tags", "tags"], ["AllTags", "alltags"]].forEach(function (pair) {
+      selected(pair[1]).forEach(function (v) {
+        parts.push(param(pair[0], v));
+      });
+    });
+    return "#/" + encodeURIComponent(RUNNER) + "?" + parts.join("&");
+  }
+
+  function update() {
+    previewEl.textContent = buildQuery();
+    runEl.setAttribute("href", buildHash());
+  }
+
+  document.getElementById("add").onclick = function () {
+    connectors.push("and");
+    conditions.push(initCondition());
+    render();
+  };
+
+  function fillMulti(id, values) {
+    var sel = document.getElementById(id);
+    values.forEach(function (v) { sel.appendChild(opt(v, v, false)); });
+  }
+  fillMulti("report", cat.fields.map(function (f) { return f.name; }));
+  fillMulti("hosts", cat.hosts);
+  fillMulti("tags", cat.tags);
+  fillMulti("alltags", cat.tags);
+
+  render();
+})();
+</script>
+</body>
+</html>

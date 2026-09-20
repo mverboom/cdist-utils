@@ -1,0 +1,104 @@
+#!/usr/bin/env python3
+"""script-server wrapper for eq.
+
+The "Explorer Query" runner has two actions:
+
+* ``--action builder`` prints the interactive query builder page. The page is
+  rendered with ``output_format: html_iframe``, so it runs as real HTML/JS in a
+  same-origin iframe.
+* ``--action run`` runs ``eq -w`` with the received flags and prints the result
+  as an HTML page with a link back to the builder.
+
+The builder does not call any script-server API: its Run button navigates the
+top window to this runner's hash route with the parameters prefilled (the same
+deep-link mechanism used by the needrestart report).
+"""
+
+from __future__ import annotations
+
+import argparse
+import html
+import subprocess
+import sys
+import urllib.parse
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent
+TEMPLATE = HERE / "eq-builder.html"
+RUNNER = "Explorer Query"
+
+RESULT_PAGE = """<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Explorer Query result</title>
+<style>
+body {{ font-family: system-ui, sans-serif; margin: 1rem; }}
+table {{ border-collapse: collapse; }}
+td, th {{ border: 1px solid #999; padding: 0.25rem 0.5rem; text-align: left; }}
+pre.error {{ color: #b00; white-space: pre-wrap; }}
+code {{ background: #f4f4f4; padding: 0.1rem 0.3rem; }}
+</style>
+</head>
+<body>
+<p><a href="{back}" target="_top">&#8592; back to the query builder</a></p>
+<p><code>{command}</code></p>
+{body}
+</body>
+</html>
+"""
+
+
+def builder_url(action: str) -> str:
+    """Return a top-level hash route for this runner with the action pinned."""
+    name = urllib.parse.quote(RUNNER, safe="")
+    return f"#/{name}?Action={action}"
+
+
+def render_builder() -> int:
+    """Print the interactive query builder with the catalog embedded."""
+    result = subprocess.run(
+        ["eq", "--catalog"], capture_output=True, text=True, timeout=120
+    )
+    if result.returncode != 0:
+        sys.stderr.write(result.stderr or "eq --catalog failed")
+        return result.returncode
+    data = result.stdout.strip().replace("</", "<\\/")
+    page = TEMPLATE.read_text().replace("__EQ_CATALOG__", data)
+    sys.stdout.write(page)
+    return 0
+
+
+def render_query(eq_args: list[str]) -> int:
+    """Run eq and print an HTML page with the results and a back link."""
+    result = subprocess.run(
+        ["eq", "-w", *eq_args], capture_output=True, text=True, timeout=600
+    )
+    if result.returncode == 0:
+        body = result.stdout
+    else:
+        body = '<pre class="error">' + html.escape(
+            result.stderr or result.stdout or "eq failed"
+        ) + "</pre>"
+    sys.stdout.write(
+        RESULT_PAGE.format(
+            back=html.escape(builder_url("builder"), quote=True),
+            command=html.escape("eq -w " + " ".join(eq_args)),
+            body=body,
+        )
+    )
+    return result.returncode
+
+
+def main(argv: list[str]) -> int:
+    """Entry point: dispatch on the Action parameter."""
+    parser = argparse.ArgumentParser(prog="eq-ss", add_help=False)
+    parser.add_argument("--action", default="builder")
+    args, rest = parser.parse_known_args(argv)
+    if args.action == "run":
+        return render_query(rest)
+    return render_builder()
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
