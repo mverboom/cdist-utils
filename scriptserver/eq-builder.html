@@ -242,6 +242,8 @@ window.EQ_CATALOG = __EQ_CATALOG__;
   function fillMulti(id, values) {
     var sel = document.getElementById(id);
     values.forEach(function (v) { sel.appendChild(opt(v, v, false)); });
+    // Selections here change the deep-link, so refresh it on change.
+    sel.onchange = update;
   }
   fillMulti("report", cat.fields.map(function (f) { return f.name; }));
   fillMulti("hosts", cat.hosts);
