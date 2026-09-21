@@ -14,7 +14,9 @@ The runner **Explorer Query** (`eq.json`) has an **Action** pulldown:
 
 Report fields are ordered: the page keeps an ordered list (add, ▲/▼, remove)
 and passes it as a single comma separated `Report` value, so `eq -r` gets the
-fields in exactly that order, just like the CLI. (script-server's multiselect
+fields in exactly that order, just like the CLI. Each item is editable and has
+an **add modifier** dropdown, so specs like `packages:~^nginx:f2` can be built
+(the modifier help comes from `eq --catalog`). (script-server's multiselect
 sends values in option order, not selection order, which is why `Report` is a
 text parameter.)
 

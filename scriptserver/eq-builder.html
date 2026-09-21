@@ -23,6 +23,8 @@
   .hint { color: #666; font-size: .9em; }
   #reportlist { margin: .4rem 0; padding-left: 1.4rem; }
   #reportlist li { margin: .15rem 0; }
+  #reportlist input[type=text] { min-width: 15rem; padding: .15rem .3rem;
+                                font-family: monospace; }
   #reportlist button { padding: 0 .4rem; margin-left: .2rem; }
 </style>
 </head>
@@ -220,9 +222,28 @@ window.EQ_CATALOG = __EQ_CATALOG__;
 
   function renderReports() {
     reportListEl.textContent = "";
-    reportOrder.forEach(function (name, i) {
+    reportOrder.forEach(function (spec, i) {
       var li = document.createElement("li");
-      li.appendChild(document.createTextNode(name));
+      var input = document.createElement("input");
+      input.type = "text";
+      input.value = spec;
+      input.title = "field[:modifier...]";
+      input.oninput = function () { reportOrder[i] = input.value; update(); };
+      li.appendChild(input);
+      if (cat.modifiers && cat.modifiers.length) {
+        var mod = document.createElement("select");
+        mod.appendChild(opt("", "add modifier", true));
+        cat.modifiers.forEach(function (m) {
+          mod.appendChild(opt(m.name, m.name + " \u2014 " + m.description, false));
+        });
+        mod.onchange = function () {
+          if (mod.value) {
+            reportOrder[i] = reportOrder[i] + ":" + mod.value;
+            renderReports();
+          }
+        };
+        li.appendChild(mod);
+      }
       var up = button("\u25B2", function () { moveReport(i, i - 1); });
       up.disabled = (i === 0);
       var down = button("\u25BC", function () { moveReport(i, i + 1); });

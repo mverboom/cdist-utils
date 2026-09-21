@@ -62,7 +62,10 @@ const catalog = {
   hosts: ["h1"], tags: ["tagA"], operators: [
     { name: "==", description: "exact" },
     { name: "exists", description: "exists" },
-  ], modifiers: [],
+  ], modifiers: [
+    { name: "trim", description: "strip whitespace" },
+    { name: "~", description: "matching lines" },
+  ],
   runner: "Explorer Query", actionBuilder: "Query builder",
   actionRun: "Run query",
 };
@@ -114,6 +117,29 @@ if (byId["reportorder"].textContent !== "fqdn,distro") {
 addField("fqdn");
 if (byId["reportorder"].textContent !== "fqdn,distro") {
   fail("duplicate report field was added: " + byId["reportorder"].textContent);
+}
+
+// Append a modifier from the dropdown.
+const firstItem = reportlist.children[0];
+const modsel = firstItem.children.filter(function (c) { return c.tag === "select"; })[0];
+modsel.value = "trim";
+modsel.onchange();
+if (byId["reportorder"].textContent !== "fqdn:trim,distro") {
+  fail("modifier not appended: " + byId["reportorder"].textContent);
+}
+if (!byId["run"].attributes.href.includes("Report=fqdn%3Atrim%2Cdistro")) {
+  fail("modifier not in link: " + byId["run"].attributes.href);
+}
+
+// Edit a spec directly (for ~regex and chained modifiers).
+const secondItem = reportlist.children[1];
+const specInput = secondItem.children.filter(function (c) {
+  return c.tag === "input";
+})[0];
+specInput.value = "distro:~^nginx:f2";
+specInput.oninput();
+if (byId["reportorder"].textContent !== "fqdn:trim,distro:~^nginx:f2") {
+  fail("spec edit not applied: " + byId["reportorder"].textContent);
 }
 
 // Restore test: fresh DOM, seeded state, re-evaluate the page.
