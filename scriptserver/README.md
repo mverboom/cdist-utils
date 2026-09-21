@@ -6,11 +6,17 @@ Web UI for building and running `eq` queries on the cdist server.
 
 The runner **Explorer Query** (`eq.json`) has an **Action** pulldown:
 
-* **Query builder** (default) — renders an interactive HTML/JS page: pick any
-  number of conditions (field, operator, value, `not`), combine them with
-  `and`/`or`, choose the fields to report, and optionally limit hosts or tags.
+* **Query builder** (default) — an interactive HTML/JS page. Pick the report
+  fields first (in order), then any number of conditions (field, operator,
+  value, `not`) combined with `and`/`or`, and optionally limit hosts or tags.
 * **Run query** — runs `eq -w` with the given flags and prints the result plus
   a link back to the builder.
+
+Report fields are ordered: the page keeps an ordered list (add, ▲/▼, remove)
+and passes it as a single comma separated `Report` value, so `eq -r` gets the
+fields in exactly that order, just like the CLI. (script-server's multiselect
+sends values in option order, not selection order, which is why `Report` is a
+text parameter.)
 
 The builder is rendered with `output_format: html_iframe`, so it is a full,
 unsanitised HTML/JS document inside a same-origin `srcdoc` iframe. It does
@@ -32,7 +38,7 @@ the array the multiselect expects).
 |---|---|
 | `eq.json` | Runner definition (`output_format: html_iframe`), `Action` + include. |
 | `include/eq-builder.json` | Builder action: no extra parameters. |
-| `include/eq-run.json` | Run action: `Report`, `Hosts`, `Tags`, `AllTags`, `Query`. |
+| `include/eq-run.json` | Run action: `Report` (ordered text), `Hosts`, `Tags`, `AllTags`, `Query`. |
 | `eq-ss` | Wrapper: builder page or `eq -w` result page. |
 | `eq-builder.html` | The builder page; `__EQ_CATALOG__` is replaced with the JSON from `eq --catalog`. |
 

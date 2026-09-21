@@ -1,7 +1,7 @@
 {
   "name": "Explorer Query",
   "script_path": "sudo -u cdist -i eq-ss",
-  "description": "Query cdist explorer output. The **Query builder** action opens an interactive builder; **Run query** executes a query (usually prefilled by the builder).",
+  "description": "Build a cdist explorer query in the browser, or run one.",
   "group": "Cdist",
   "requires_terminal": false,
   "output_format": "html_iframe",
@@ -12,7 +12,7 @@
       "param": "--action",
       "type": "list",
       "default": "builder",
-      "description": "Query builder builds the expression interactively; Run query executes it.",
+      "description": "Query builder builds the expression; Run query executes it.",
       "values": ["builder", "run"],
       "values_ui_mapping": {
         "builder": "Query builder",

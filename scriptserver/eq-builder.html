@@ -16,25 +16,31 @@
          background: #2b6cb0; color: #fff; text-decoration: none;
          border-radius: 4px; }
   #run:hover { background: #245a94; }
-  #preview { background: #f4f4f4; padding: .5rem; white-space: pre-wrap;
-             font-family: monospace; }
+  #preview, #reportorder { background: #f4f4f4; padding: .5rem;
+             white-space: pre-wrap; font-family: monospace; }
   fieldset { margin: .5rem 0; }
   select[multiple] { min-width: 16rem; }
   .hint { color: #666; font-size: .9em; }
+  #reportlist { margin: .4rem 0; padding-left: 1.4rem; }
+  #reportlist li { margin: .15rem 0; }
+  #reportlist button { padding: 0 .4rem; margin-left: .2rem; }
 </style>
 </head>
 <body>
 <h2>Explorer Query builder</h2>
-<p class="hint">Pick conditions, then <em>Run query</em> to open the runner with
-everything prefilled.</p>
+<p class="hint">Pick the report fields, add conditions, then <em>Run query</em>
+to open the runner with everything prefilled.</p>
+
+<fieldset>
+  <legend>Report fields <span class="hint">(in order)</span></legend>
+  <select id="reportpick"></select>
+  <button type="button" id="addreport">Add field</button>
+  <ol id="reportlist"></ol>
+  <div class="hint">eq -r <code id="reportorder"></code></div>
+</fieldset>
 
 <div id="conditions"></div>
 <button type="button" id="add">Add condition</button>
-
-<fieldset>
-  <legend>Report fields</legend>
-  <select id="report" multiple size="6"></select>
-</fieldset>
 
 <fieldset>
   <legend>Limit to hosts <span class="hint">(optional, none = all)</span></legend>
@@ -66,6 +72,7 @@ window.EQ_CATALOG = __EQ_CATALOG__;
   // The deep-link must use the Action UI label, not the raw list value.
   var ACTION_RUN = cat.actionRun || "run";
 
+  var reportOrder = [];
   var conditions = [];
   var connectors = [];
 
@@ -78,6 +85,8 @@ window.EQ_CATALOG = __EQ_CATALOG__;
   var conditionsEl = document.getElementById("conditions");
   var previewEl = document.getElementById("preview");
   var runEl = document.getElementById("run");
+  var reportListEl = document.getElementById("reportlist");
+  var reportOrderEl = document.getElementById("reportorder");
 
   function opt(value, label, selected) {
     var o = document.createElement("option");
@@ -85,6 +94,14 @@ window.EQ_CATALOG = __EQ_CATALOG__;
     o.textContent = label;
     if (selected) { o.selected = true; }
     return o;
+  }
+
+  function button(label, onclick) {
+    var b = document.createElement("button");
+    b.type = "button";
+    b.textContent = label;
+    b.onclick = onclick;
+    return b;
   }
 
   function fieldSelect(cond) {
@@ -140,7 +157,7 @@ window.EQ_CATALOG = __EQ_CATALOG__;
     return sel;
   }
 
-  function render() {
+  function renderConditions() {
     conditionsEl.textContent = "";
     conditions.forEach(function (cond, i) {
       if (i > 0) {
@@ -163,18 +180,41 @@ window.EQ_CATALOG = __EQ_CATALOG__;
       row.appendChild(fieldSelect(cond));
       row.appendChild(operatorSelect(cond));
       if (!UNARY.has(cond.op)) { row.appendChild(valueInput(cond)); }
-      var rm = document.createElement("button");
-      rm.type = "button";
-      rm.textContent = "remove";
-      rm.onclick = function () {
+      row.appendChild(button("remove", function () {
         conditions.splice(i, 1);
         connectors.splice(Math.max(i - 1, 0), 1);
-        render();
-      };
-      row.appendChild(rm);
+        renderConditions();
+      }));
       conditionsEl.appendChild(row);
     });
     update();
+  }
+
+  function renderReports() {
+    reportListEl.textContent = "";
+    reportOrder.forEach(function (name, i) {
+      var li = document.createElement("li");
+      li.appendChild(document.createTextNode(name));
+      var up = button("\u25B2", function () { moveReport(i, i - 1); });
+      up.disabled = (i === 0);
+      var down = button("\u25BC", function () { moveReport(i, i + 1); });
+      down.disabled = (i === reportOrder.length - 1);
+      li.appendChild(up);
+      li.appendChild(down);
+      li.appendChild(button("\u2715", function () {
+        reportOrder.splice(i, 1);
+        renderReports();
+      }));
+      reportListEl.appendChild(li);
+    });
+    update();
+  }
+
+  function moveReport(from, to) {
+    if ((to < 0) || (to >= reportOrder.length)) { return; }
+    var moved = reportOrder.splice(from, 1)[0];
+    reportOrder.splice(to, 0, moved);
+    renderReports();
   }
 
   function condTokens(c) {
@@ -219,25 +259,42 @@ window.EQ_CATALOG = __EQ_CATALOG__;
 
   function buildHash() {
     var parts = [param("Action", ACTION_RUN), param("Query", buildQuery())];
-    [["Report", "report"], ["Hosts", "hosts"],
-     ["Tags", "tags"], ["AllTags", "alltags"]].forEach(function (pair) {
-      selected(pair[1]).forEach(function (v) {
-        parts.push(param(pair[0], v));
+    if (reportOrder.length) {
+      parts.push(param("Report", reportOrder.join(",")));
+    }
+    [["Hosts", "hosts"], ["Tags", "tags"], ["AllTags", "alltags"]]
+      .forEach(function (pair) {
+        selected(pair[1]).forEach(function (v) {
+          parts.push(param(pair[0], v));
+        });
       });
-    });
     return "#/" + encodeURIComponent(RUNNER) + "?" + parts.join("&");
   }
 
   function update() {
     previewEl.textContent = buildQuery();
+    reportOrderEl.textContent = reportOrder.join(",");
     runEl.setAttribute("href", buildHash());
   }
+
+  document.getElementById("addreport").onclick = function () {
+    var pick = document.getElementById("reportpick");
+    if (pick.value && (reportOrder.indexOf(pick.value) === -1)) {
+      reportOrder.push(pick.value);
+      renderReports();
+    }
+  };
 
   document.getElementById("add").onclick = function () {
     connectors.push("and");
     conditions.push(initCondition());
-    render();
+    renderConditions();
   };
+
+  function fillSelect(id, values) {
+    var sel = document.getElementById(id);
+    values.forEach(function (v) { sel.appendChild(opt(v, v, false)); });
+  }
 
   function fillMulti(id, values) {
     var sel = document.getElementById(id);
@@ -245,12 +302,16 @@ window.EQ_CATALOG = __EQ_CATALOG__;
     // Selections here change the deep-link, so refresh it on change.
     sel.onchange = update;
   }
-  fillMulti("report", cat.fields.map(function (f) { return f.name; }));
+
+  fillSelect("reportpick", cat.fields.map(function (f) {
+    return f.name;
+  }));
   fillMulti("hosts", cat.hosts);
   fillMulti("tags", cat.tags);
   fillMulti("alltags", cat.tags);
 
-  render();
+  renderReports();
+  renderConditions();
 })();
 </script>
 </body>
