@@ -80,6 +80,9 @@ addField("fqdn");
 if (!run.attributes.href.includes("Report=distro%2Cfqdn")) {
   fail("expected report order distro,fqdn in " + run.attributes.href);
 }
+if (byId["run-top"].attributes.href !== run.attributes.href) {
+  fail("top Run link does not match the bottom one");
+}
 if (byId["reportorder"].textContent !== "distro,fqdn") {
   fail("expected preview 'distro,fqdn', got " + byId["reportorder"].textContent);
 }
