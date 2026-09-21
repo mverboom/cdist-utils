@@ -39,6 +39,14 @@ global.document = {
   createTextNode(text) { return { text: text }; },
 };
 global.window = {};
+const storage = {};
+global.localStorage = {
+  getItem(key) {
+    return Object.prototype.hasOwnProperty.call(storage, key) ? storage[key] : null;
+  },
+  setItem(key, value) { storage[key] = String(value); },
+  removeItem(key) { delete storage[key]; },
+};
 
 const template = fs.readFileSync(
   path.join(__dirname, "..", "scriptserver", "eq-builder.html"), "utf8");
@@ -103,6 +111,35 @@ if (byId["reportorder"].textContent !== "fqdn,distro") {
 addField("fqdn");
 if (byId["reportorder"].textContent !== "fqdn,distro") {
   fail("duplicate report field was added: " + byId["reportorder"].textContent);
+}
+
+// Restore test: fresh DOM, seeded state, re-evaluate the page.
+Object.keys(byId).forEach(function (key) { delete byId[key]; });
+storage["eq.builder.state"] = JSON.stringify({
+  conditions: [{ field: "fqdn", op: "==", value: "h1", negate: false }],
+  connectors: [],
+  reportOrder: ["distro"],
+  hosts: ["h1"],
+  tags: [],
+  alltags: [],
+});
+eval(script);
+if (byId["reportorder"].textContent !== "distro") {
+  fail("report order not restored: " + byId["reportorder"].textContent);
+}
+if (!byId["preview"].textContent.includes("fqdn == h1")) {
+  fail("condition not restored: " + byId["preview"].textContent);
+}
+if (!byId["run"].attributes.href.includes("Report=distro")) {
+  fail("report not restored in link: " + byId["run"].attributes.href);
+}
+if (!byId["run"].attributes.href.includes("Hosts=h1")) {
+  fail("hosts not restored in link: " + byId["run"].attributes.href);
+}
+
+byId["reset"].onclick();
+if (byId["reportorder"].textContent !== "") {
+  fail("reset did not clear the report fields");
 }
 
 console.log("ok");

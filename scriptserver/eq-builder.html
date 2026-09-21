@@ -30,7 +30,10 @@
 <h2>Explorer Query builder</h2>
 <p class="hint">Pick the report fields, add conditions, then <em>Run query</em>
 to open the runner with everything prefilled.</p>
-<p><a id="run-top" class="runlink" target="_top">Run query</a></p>
+<p>
+  <a id="run-top" class="runlink" target="_top">Run query</a>
+  <button type="button" id="reset">Reset</button>
+</p>
 
 <fieldset>
   <legend>Report fields <span class="hint">(in order)</span></legend>
@@ -76,15 +79,35 @@ window.EQ_CATALOG = __EQ_CATALOG__;
   // The deep-link must use the Action UI label, not the raw list value.
   var ACTION_RUN = cat.actionRun || "run";
 
+  var STATE_KEY = "eq.builder.state";
   var reportOrder = [];
   var conditions = [];
   var connectors = [];
+  var savedHosts = [];
+  var savedTags = [];
+  var savedAllTags = [];
 
   function initCondition() {
     return {field: cat.fields.length ? cat.fields[0].name : "",
             op: "==", value: "", negate: false};
   }
-  if (cat.fields.length) { conditions.push(initCondition()); }
+
+  // Restore the last state, so returning after a run lets you adjust the
+  // query instead of starting over. localStorage is same-origin (srcdoc) and
+  // survives the iframe navigations.
+  try {
+    var saved = JSON.parse(localStorage.getItem(STATE_KEY) || "null");
+    if (saved) {
+      reportOrder = saved.reportOrder || [];
+      conditions = saved.conditions || [];
+      connectors = saved.connectors || [];
+      savedHosts = saved.hosts || [];
+      savedTags = saved.tags || [];
+      savedAllTags = saved.alltags || [];
+    }
+  } catch (e) { /* ignore unreadable state */ }
+
+  if (!conditions.length && cat.fields.length) { conditions.push(initCondition()); }
 
   var conditionsEl = document.getElementById("conditions");
   var previewEl = document.getElementById("preview");
@@ -282,6 +305,24 @@ window.EQ_CATALOG = __EQ_CATALOG__;
     var hash = buildHash();
     runEl.setAttribute("href", hash);
     if (runTopEl) { runTopEl.setAttribute("href", hash); }
+    saveState();
+  }
+
+  function saveState() {
+    try {
+      localStorage.setItem(STATE_KEY, JSON.stringify({
+        conditions: conditions, connectors: connectors, reportOrder: reportOrder,
+        hosts: selected("hosts"), tags: selected("tags"),
+        alltags: selected("alltags")
+      }));
+    } catch (e) { /* storage unavailable */ }
+  }
+
+  function restoreMulti(id, values) {
+    var sel = document.getElementById(id);
+    sel.options.forEach(function (o) {
+      if (values.indexOf(o.value) !== -1) { o.selected = true; }
+    });
   }
 
   document.getElementById("addreport").onclick = function () {
@@ -290,6 +331,19 @@ window.EQ_CATALOG = __EQ_CATALOG__;
       reportOrder.push(pick.value);
       renderReports();
     }
+  };
+
+  document.getElementById("reset").onclick = function () {
+    reportOrder = [];
+    conditions = [initCondition()];
+    connectors = [];
+    ["hosts", "tags", "alltags"].forEach(function (id) {
+      var sel = document.getElementById(id);
+      sel.options.forEach(function (o) { o.selected = false; });
+    });
+    try { localStorage.removeItem(STATE_KEY); } catch (e) { /* ignore */ }
+    renderReports();
+    renderConditions();
   };
 
   document.getElementById("add").onclick = function () {
@@ -316,6 +370,10 @@ window.EQ_CATALOG = __EQ_CATALOG__;
   fillMulti("hosts", cat.hosts);
   fillMulti("tags", cat.tags);
   fillMulti("alltags", cat.tags);
+
+  restoreMulti("hosts", savedHosts);
+  restoreMulti("tags", savedTags);
+  restoreMulti("alltags", savedAllTags);
 
   renderReports();
   renderConditions();
