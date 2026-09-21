@@ -344,6 +344,19 @@ assert cat["fields"][0]["values"][0]["value"]
    [[ "$output" == *'<td>h1.example.com</td>'* ]]
 }
 
+@test "eq-ss result shows only the selected report fields" {
+   run "$EQ_ROOT/scriptserver/eq-ss" --action run -r distr -q 'distr == debian'
+   [ "$status" -eq 0 ]
+   [[ "$output" == *'<th>distr</th>'* ]]
+   [[ "$output" != *'<th>hostname</th>'* ]]
+}
+
+@test "eq-ss result falls back to hostnames without report fields" {
+   run "$EQ_ROOT/scriptserver/eq-ss" --action run -q 'distr == debian'
+   [ "$status" -eq 0 ]
+   [[ "$output" == *'<th>hostname</th>'* ]]
+}
+
 @test "complete lists static contexts without CDIST_EXPLORE" {
    run env -u CDIST_EXPLORE "$EQ" --complete logical
    [ "$status" -eq 0 ]

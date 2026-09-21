@@ -39,8 +39,13 @@ to open the runner with everything prefilled.</p>
   <div class="hint">eq -r <code id="reportorder"></code></div>
 </fieldset>
 
-<div id="conditions"></div>
-<button type="button" id="add">Add condition</button>
+<fieldset>
+  <legend>Query</legend>
+  <div id="conditions"></div>
+  <button type="button" id="add">Add condition</button>
+  <p class="hint">expression:</p>
+  <pre id="preview"></pre>
+</fieldset>
 
 <fieldset>
   <legend>Limit to hosts <span class="hint">(optional, none = all)</span></legend>
@@ -55,8 +60,6 @@ to open the runner with everything prefilled.</p>
   <select id="alltags" multiple size="4"></select>
 </fieldset>
 
-<p>Query:</p>
-<pre id="preview"></pre>
 <a id="run" target="_top">Run query</a>
 
 <script>

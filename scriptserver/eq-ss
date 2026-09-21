@@ -95,22 +95,58 @@ def render_builder() -> int:
     return 0
 
 
+def _report_fields(eq_args: list[str]) -> list[str]:
+    """Return the -r report fields in order."""
+    for i, arg in enumerate(eq_args):
+        if arg == "-r" and i + 1 < len(eq_args):
+            return [field for field in eq_args[i + 1].split(",") if field]
+    return []
+
+
+def _render_table(columns: list[str], rows: list[dict]) -> str:
+    """Render a table with exactly the given columns."""
+    head = "".join(f"<th>{html.escape(column)}</th>" for column in columns)
+    lines = ["<table>", f"<tr>{head}</tr>"]
+    for row in rows:
+        cells = []
+        for column in columns:
+            value = str(row.get(column, ""))
+            cells.append(
+                "<td>" + html.escape(value).replace("\n", "<br>") + "</td>"
+            )
+        lines.append("<tr>" + "".join(cells) + "</tr>")
+    lines.append("</table>")
+    return "\n".join(lines)
+
+
 def render_query(eq_args: list[str]) -> int:
-    """Run eq and print an HTML page with the results and a back link."""
+    """Run eq and print an HTML page with the results and a back link.
+
+    The output is built from ``eq -j`` using only the requested ``-r`` fields,
+    so the table matches the CLI columns instead of always prepending a
+    hostname column (which the ``-w`` HTML output does).
+    """
+    reports = _report_fields(eq_args)
     result = subprocess.run(
-        ["eq", "-w", *eq_args], capture_output=True, text=True, timeout=600
+        ["eq", "-j", *eq_args], capture_output=True, text=True, timeout=600
     )
-    runner, action_builder, _ = load_runner()
+    rows = None
     if result.returncode == 0:
-        body = result.stdout
-    else:
+        try:
+            rows = json.loads(result.stdout)
+        except ValueError:
+            rows = None
+    runner, action_builder, _ = load_runner()
+    if rows is None:
         body = '<pre class="error">' + html.escape(
             result.stderr or result.stdout or "eq failed"
         ) + "</pre>"
+    else:
+        body = _render_table(reports or ["hostname"], rows)
     sys.stdout.write(
         RESULT_PAGE.format(
             back=html.escape(builder_url(runner, action_builder), quote=True),
-            command=html.escape("eq -w " + " ".join(eq_args)),
+            command=html.escape("eq " + " ".join(eq_args)),
             body=body,
         )
     )

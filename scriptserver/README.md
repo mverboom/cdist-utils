@@ -18,6 +18,10 @@ fields in exactly that order, just like the CLI. (script-server's multiselect
 sends values in option order, not selection order, which is why `Report` is a
 text parameter.)
 
+The result table is built from `eq -j` using exactly the requested `-r` fields,
+so it does not get the hostname column that `eq -w` always prepends. With no
+report fields it lists the matching hostnames.
+
 The builder is rendered with `output_format: html_iframe`, so it is a full,
 unsanitised HTML/JS document inside a same-origin `srcdoc` iframe. It does
 **not** call any script-server API. Its **Run query** button navigates the top
