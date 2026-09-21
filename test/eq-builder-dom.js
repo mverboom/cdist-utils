@@ -11,6 +11,9 @@ class El {
     this.tag = tag;
     this.children = [];
     this.options = [];
+    // A real HTMLOptionsCollection has no forEach; shadow the array method so
+    // the test catches that class of bug.
+    this.options.forEach = undefined;
     this.attributes = {};
     this.style = {};
     this._text = "";

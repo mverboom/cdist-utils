@@ -320,7 +320,7 @@ window.EQ_CATALOG = __EQ_CATALOG__;
 
   function restoreMulti(id, values) {
     var sel = document.getElementById(id);
-    sel.options.forEach(function (o) {
+    Array.prototype.forEach.call(sel.options, function (o) {
       if (values.indexOf(o.value) !== -1) { o.selected = true; }
     });
   }
@@ -339,7 +339,9 @@ window.EQ_CATALOG = __EQ_CATALOG__;
     connectors = [];
     ["hosts", "tags", "alltags"].forEach(function (id) {
       var sel = document.getElementById(id);
-      sel.options.forEach(function (o) { o.selected = false; });
+      Array.prototype.forEach.call(sel.options, function (o) {
+        o.selected = false;
+      });
     });
     try { localStorage.removeItem(STATE_KEY); } catch (e) { /* ignore */ }
     renderReports();
