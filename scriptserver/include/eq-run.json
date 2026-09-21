@@ -44,8 +44,7 @@
       "name": "Query",
       "param": "-q",
       "type": "text",
-      "required": true,
-      "description": "Expression to run, e.g. 'distro == debian and cpu_cores gt 1'."
+      "description": "Expression to run, e.g. 'distro == debian and cpu_cores gt 1'. Empty lists all matching hosts."
     }
   ]
 }

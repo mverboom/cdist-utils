@@ -29,3 +29,13 @@ assert report["param"] == "-r", report
 '
    [ "$status" -eq 0 ]
 }
+
+@test "run action does not mark Query required so validation stays clean" {
+   run python3 -c '
+import json
+runner = json.load(open("'"$EQ_ROOT"'/scriptserver/include/eq-run.json"))
+query = [p for p in runner["parameters"] if p["name"] == "Query"][0]
+assert not query.get("required"), query
+'
+   [ "$status" -eq 0 ]
+}
