@@ -1,0 +1,4 @@
+#!/bin/sh
+# __apt_mark refuses to work when the target's apt is older than 0.8.14.2
+# ("APT version not supported"). Offline, assume it is new enough.
+echo 0
