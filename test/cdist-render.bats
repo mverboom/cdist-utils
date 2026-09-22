@@ -151,6 +151,35 @@ run_render() {
    [[ "$output" == *"mode: 0644 -> 0600"* ]]
 }
 
+@test "an unknown type explorer state defaults to the requested state" {
+   run_render host.example.com >/dev/null || true
+   mkdir -p "$CR_FIX/object/parameter"
+   printf 'present\n' > "$CR_FIX/object/parameter/state"
+   run env STUBS="$CR_FIX/stubs" "$CR_FIX/work/bin/fake-exec" somehost \
+      "/bin/sh -c 'export __object=$CR_FIX/object; export __object_id=x; \
+      /tmp/conf/type/__line/explorer/state'"
+   [ "$output" = "present" ]
+}
+
+@test "a stub overrides the default type explorer answer" {
+   mkdir -p "$CR_FIX/stubs/__thing" "$CR_FIX/object/parameter"
+   printf 'present\n' > "$CR_FIX/object/parameter/state"
+   printf '#!/bin/sh\necho "stubbed $__object_id"\n' \
+      > "$CR_FIX/stubs/__thing/state"
+   chmod 755 "$CR_FIX/stubs/__thing/state"
+   run_render host.example.com >/dev/null || true
+   run env STUBS="$CR_FIX/stubs" "$CR_FIX/work/bin/fake-exec" somehost \
+      "/bin/sh -c 'export __object=$CR_FIX/object; export __object_id=abc; \
+      /tmp/conf/type/__thing/explorer/state'"
+   [ "$output" = "stubbed abc" ]
+}
+
+@test "the bundled stub directory is the default" {
+   run bash -c "cd '$CR_ROOT' && ./cdist-render render --help"
+   [ "$status" -eq 0 ]
+   [ -d "$CR_ROOT/cdist-render-stubs/__ssh_dot_ssh" ]
+}
+
 @test "the explorer overlay replays the recorded data" {
    run_render host.example.com >/dev/null
    run cat "$CR_FIX/work/overlay/explorer/fqdn"

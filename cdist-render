@@ -33,9 +33,7 @@ FAKE_EXEC = """#!/bin/sh
 shift
 cmd="$*"
 
-# Type explorers describe target state we do not have offline. A stub per
-# <type>/<explorer> provides a plausible answer; without one the explorer
-# returns nothing and the type decides for itself what that means.
+# Type explorers describe target state that is not recorded anywhere.
 case "$cmd" in
 *conf/type/*/explorer/*)
    rest="${cmd##*conf/type/}"
@@ -43,11 +41,17 @@ case "$cmd" in
    sub="${rest#*/}"
    name="${sub#explorer/}"
    name="${name%%[\\' ]*}"
-   oid=$(printf '%s' "$cmd" | sed -n 's/.*__object_id=\\([^ ;]*\\).*/\\1/p')
-   __object_id="$oid"
-   export __object_id
+   __object_id=$(printf '%s' "$cmd" | sed -n 's/.*__object_id=\\([^ ;]*\\).*/\\1/p')
+   __object=$(printf '%s' "$cmd" | sed -n 's/.*__object=\\([^ ;]*\\).*/\\1/p')
+   export __object_id __object
    if test -f "$STUBS/$type/$name"; then
       exec "$STUBS/$type/$name"
+   fi
+   # Without a stub, assume the target already matches the requested state:
+   # the object then generates no code and needs no target state at all,
+   # which is what a rendered tree should show.
+   if test "$name" = "state" && test -f "$__object/parameter/state"; then
+      exec cat "$__object/parameter/state"
    fi
    exit 0
    ;;
@@ -131,8 +135,9 @@ def common(parser: argparse.ArgumentParser) -> None:
                              "./rendered)")
     parser.add_argument("-S", "--stubs", type=Path, metavar="DIR",
                         default=None,
-                        help="directory with type explorer stubs "
-                             "(default: <work-dir>/stubs)")
+                        help="directory with type explorer stubs (default: "
+                             "cdist-render-stubs next to the script, else "
+                             "<work-dir>/stubs)")
     parser.add_argument("--cdist", default="cdist", metavar="CMD",
                         help="cdist binary to use")
 
@@ -160,7 +165,9 @@ def resolve(args: argparse.Namespace) -> dict[str, object]:
     explore = args.explore or (
         Path(os.environ["CDIST_EXPLORE"]) if os.environ.get("CDIST_EXPLORE")
         else None)
-    stubs = args.stubs or args.work_dir / "stubs"
+    bundled = Path(__file__).resolve().parent / "cdist-render-stubs"
+    stubs = args.stubs or (bundled if bundled.is_dir()
+                           else args.work_dir / "stubs")
     return {
         "config_dirs": [path.resolve() for path in config_dirs],
         "upstream": find_upstream(args.upstream_conf),

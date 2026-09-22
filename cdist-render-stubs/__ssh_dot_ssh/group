@@ -1,0 +1,3 @@
+#!/bin/sh
+# ... and the group of that entry, to own the .ssh directory.
+echo "users:x:1001:"
