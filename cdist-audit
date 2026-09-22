@@ -272,8 +272,8 @@ def logical_lines(text: str) -> list[tuple[int, str]]:
         continued = raw.endswith("\\")
         buffer.append(raw[:-1] if continued else raw)
         if not continued:
-            if not pending:
-                result.append((start, "\n".join(buffer)))
+            # the statement itself is code, only the body that follows is data
+            result.append((start, "\n".join(buffer)))
             buffer = []
     if buffer:
         result.append((start, "\n".join(buffer)))

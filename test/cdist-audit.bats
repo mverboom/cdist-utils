@@ -235,18 +235,19 @@ assert_path() {
 }
 
 @test "does not mistake a heredoc body for shell" {
-   cat >> "$CA_FIX/config/manifest/autorun/good" <<'EOF'
-__file /etc/nginx.conf --state present --source - <<-EOF
+   cat >> "$CA_FIX/config/manifest/autorun/good" <<'OUTER'
+__file /etc/nginx.conf --state present --nosuchparam 1 --source - <<-EOF
 	include sslconfig.conf;
 	__nosuchtype inside_a_heredoc
 	EOF
-EOF
+OUTER
    run_audit
    assert_check include-missing
    run messages_of include-missing
    [[ "$output" != *sslconfig.conf* ]]
    run messages_of type-missing
    [[ "$output" != *inside_a_heredoc* ]]
+   assert_message param-unknown '--nosuchparam is not a parameter of __file'
 }
 
 @test "audits a type that is a symlink into another repository" {
