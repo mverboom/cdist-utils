@@ -36,6 +36,8 @@ while test $# -gt 0; do
 done
 data="$out/$host/data"
 marker=".cdist-test"
+mkdir -p "$out"
+printf '%s\n%s\n' "$HOME" "$CDIST_EXPLORE" > "$out/env.txt"
 mkdir -p "$data/object/__file/etc/base/$marker"
 printf '%s\n' "$marker" > "$data/object_marker"
 printf '__file/etc/base\n' > "$data/typeorder"
@@ -172,6 +174,21 @@ run_render() {
       "/bin/sh -c 'export __object=$CR_FIX/object; export __object_id=abc; \
       /tmp/conf/type/__thing/explorer/state'"
    [ "$output" = "stubbed abc" ]
+}
+
+@test "the run is sandboxed: HOME and CDIST_EXPLORE point into the work dir" {
+   run_render --keep-work host.example.com >/dev/null
+   run cat "$CR_FIX/work/host.example.com/out/env.txt"
+   [[ "$output" == *"$CR_FIX/work/home"* ]]
+   [[ "$output" == *"$CR_FIX/work/host.example.com/explore-out"* ]]
+   [[ "$output" != *"$CR_FIX/explore"* ]]
+}
+
+@test "a successful render cleans up its work directory" {
+   run_render host.example.com >/dev/null
+   [ ! -d "$CR_FIX/work/host.example.com" ]
+   run_render --keep-work other.example.com >/dev/null
+   [ -d "$CR_FIX/work/other.example.com" ]
 }
 
 @test "the bundled stub directory is the default" {

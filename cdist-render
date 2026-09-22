@@ -70,10 +70,12 @@ cp -a -- "${argv[@]}" "$dest"
 """
 
 EXPLORER_REPLAY = """#!/bin/sh
-# Replay the recorded explorer output of the target host.
+# Replay the recorded explorer output of the target host. CDIST_EXPLORE points
+# at a scratch directory (cdist writes the explorer output there), the data
+# that is replayed lives in CDIST_REPLAY_EXPLORE.
 name="${0##*/}"
 for candidate in "$__target_host" "$__target_fqdn" "$__target_hostname"; do
-   file="$CDIST_EXPLORE/$candidate/$name"
+   file="${CDIST_REPLAY_EXPLORE:-$CDIST_EXPLORE}/$candidate/$name"
    if test -f "$file"; then
       exec cat "$file"
    fi
@@ -99,6 +101,9 @@ def build_parser() -> argparse.ArgumentParser:
     render.add_argument("hosts", nargs="*", help="hosts to render")
     render.add_argument("-a", "--all", action="store_true",
                         help="render every host that has explorer data")
+    render.add_argument("--keep-work", action="store_true",
+                        help="keep the per host work directory (cache, logs) "
+                             "after a successful render")
     common(render)
 
     diff = sub.add_parser("diff", help="compare two snapshot directories")
@@ -168,14 +173,20 @@ def resolve(args: argparse.Namespace) -> dict[str, object]:
     bundled = Path(__file__).resolve().parent / "cdist-render-stubs"
     stubs = args.stubs or (bundled if bundled.is_dir()
                            else args.work_dir / "stubs")
+    inventory = Path(os.environ.get("CDIST_INVENTORY") or
+                     Path.home() / ".cdist" / "inventory")
+    exclude = Path(os.environ["HOME"]) / ".cdist-fullrun-exclude"
     return {
         "config_dirs": [path.resolve() for path in config_dirs],
         "upstream": find_upstream(args.upstream_conf),
         "explore": explore,
         "work": args.work_dir,
+        "home": args.work_dir / "home",
         "snapshot": args.snapshot_dir,
         "stubs": stubs,
         "cdist": args.cdist,
+        "inventory": inventory if inventory.is_dir() else None,
+        "exclude": exclude if exclude.is_file() else None,
     }
 
 
@@ -196,6 +207,18 @@ def prepare_work(context: dict[str, object]) -> None:
     overlay.mkdir(parents=True, exist_ok=True)
     bin_dir.mkdir(parents=True, exist_ok=True)
     context["stubs"].mkdir(parents=True, exist_ok=True)
+    home = context["home"]
+    (home / ".cdist").mkdir(parents=True, exist_ok=True)
+    # cdist caches per host under $HOME/.cdist/cache: keep that in the work
+    # directory, but let the run see the inventory and the full-run exclusions.
+    if context["inventory"]:
+        link = home / ".cdist" / "inventory"
+        if not link.exists():
+            link.symlink_to(context["inventory"])
+    if context["exclude"]:
+        link = home / ".cdist-fullrun-exclude"
+        if not link.exists():
+            link.symlink_to(context["exclude"])
     (bin_dir / "fake-exec").write_text(FAKE_EXEC)
     (bin_dir / "fake-exec").chmod(0o755)
     (bin_dir / "fake-copy").write_text(FAKE_COPY)
@@ -217,7 +240,7 @@ def render_command(context: dict[str, object], host: str) -> list[str]:
         "--remote-copy", str(context["work"] / "bin" / "fake-copy"),
         "-r", str(work / "remote"),
         "-o", str(work / "out"),
-        "-C", str(work / "cache"),
+        "-C", host,
     ]
     for config_dir in context["config_dirs"]:
         command += ["-c", str(config_dir)]
@@ -225,20 +248,31 @@ def render_command(context: dict[str, object], host: str) -> list[str]:
     return command
 
 
-def render_environment(context: dict[str, object]) -> dict[str, str]:
-    """Return the environment for a cdist run."""
+def render_environment(context: dict[str, object], host: str) -> \
+        dict[str, str]:
+    """Return the environment for a cdist run.
+
+    HOME points into the work directory so cdist keeps its cache there, and
+    CDIST_EXPLORE points at a scratch directory: the initial manifest writes
+    the explorer output to $CDIST_EXPLORE/$fqdn and must not touch the
+    recorded data that is being replayed.
+    """
     env = dict(os.environ)
     env["CDIST_BETA"] = "1"
     env["STUBS"] = str(context["stubs"])
+    env["HOME"] = str(context["home"])
     if context["explore"]:
-        env["CDIST_EXPLORE"] = str(context["explore"])
+        env["CDIST_REPLAY_EXPLORE"] = str(context["explore"])
+    env["CDIST_EXPLORE"] = str(context["work"] / host / "explore-out")
     return env
 
 
 def find_tree(context: dict[str, object], host: str) -> Path | None:
     """Return the directory holding the objects of a finished run."""
     work = context["work"] / host
-    for candidate in (work / "cache", *sorted((work / "out").glob("*/data"))):
+    candidates = [context["home"] / ".cdist" / "cache" / host,
+                  *sorted((work / "out").glob("*/data"))]
+    for candidate in candidates:
         if (candidate / "object_marker").is_file():
             return candidate
     return None
@@ -313,7 +347,8 @@ def first_error(log: Path) -> str:
     return ""
 
 
-def render_host(context: dict[str, object], host: str) -> dict[str, object]:
+def render_host(context: dict[str, object], host: str,
+                keep_work: bool = False) -> dict[str, object]:
     """Render one host and write its snapshot file."""
     snapshot_dir = context["snapshot"]
     snapshot_dir.mkdir(parents=True, exist_ok=True)
@@ -324,7 +359,8 @@ def render_host(context: dict[str, object], host: str) -> dict[str, object]:
     started = time.time()
     with log.open("w") as handle:
         result = subprocess.run(render_command(context, host),
-                                env=render_environment(context), stdout=handle,
+                                env=render_environment(context, host),
+                                stdout=handle,
                                 stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL)
     data = find_tree(context, host)
     snapshot: dict[str, object] = {
@@ -339,6 +375,8 @@ def render_host(context: dict[str, object], host: str) -> dict[str, object]:
         snapshot.update({"objects": [], "order": [], "messages": []})
     (snapshot_dir / f"{host}.json").write_text(
         json.dumps(snapshot, indent=1, sort_keys=True) + "\n")
+    if snapshot["ok"] and not keep_work:
+        shutil.rmtree(work, ignore_errors=True)
     return snapshot
 
 
@@ -355,7 +393,7 @@ def command_render(context: dict[str, object], args: argparse.Namespace) -> int:
                        if entry.is_dir() and entry.name != ".git")
     failures = 0
     for host in hosts:
-        snapshot = render_host(context, host)
+        snapshot = render_host(context, host, args.keep_work)
         state = "ok" if snapshot["ok"] else "FAILED"
         if not snapshot["ok"]:
             failures += 1
