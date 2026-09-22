@@ -82,9 +82,9 @@ EOF
    printf '#!/bin/sh\necho unused\n' > "$cfg/type/__unused_type/manifest"
    printf '#!/bin/sh\necho local\n' > "$cfg/explorer/local_explorer"
    printf 'content\n' > "$cfg/files/dir/file"
-   mkdir -p "$cfg/files/sshconfig/configs"
+   mkdir -p "$cfg/files/sshconfig/configs" "$cfg/files/sshconfig/generic"
    printf '!present.conf\n!missing.conf\n' \
-      > "$cfg/files/sshconfig/configs/cdist"
+      > "$cfg/files/sshconfig/generic/cdist"
    printf 'x\n' > "$cfg/files/sshconfig/configs/present.conf"
    ln -s /nonexistent/target "$cfg/type/__broken_type"
 

@@ -561,25 +561,34 @@ def check_cfg_references(audit: Audit) -> None:
     swallow the error with "|| true"). One deleted file can therefore stop a
     whole block of configuration from ever being applied.
     """
+    reported: set[tuple[Path, str]] = set()
     for repo in sorted(cfg_repo_dirs(audit)):
-        for path in sorted(entry for entry in _entries(repo)
-                           if entry.is_file()):
-            try:
-                if path.stat().st_size > MAX_CFG_FILE_SIZE:
+        # Keys are looked up in the search directories, which live next to the
+        # repository (files/<service>/<host|generic>/...), while a "!" reference
+        # inside such a key is resolved against the repository itself.
+        for root, dirs, names in os.walk(repo.parent):
+            dirs[:] = [name for name in dirs if name != ".git"]
+            for name in names:
+                path = Path(root) / name
+                try:
+                    if path.stat().st_size > MAX_CFG_FILE_SIZE:
+                        continue
+                    content = path.read_text(errors="replace")
+                except OSError:
                     continue
-                content = path.read_text(errors="replace")
-            except OSError:
-                continue
-            for line in content.splitlines():
-                match = CFG_REFERENCE.match(line.strip())
-                if not match:
-                    continue
-                target = match.group(1)
-                if "$" in target or (repo / target).exists():
-                    continue
-                audit.add("include-cfg-file-missing", "error", path, None,
-                          f"!{target} is not in {repo}, and include_cfg stops "
-                          "at the first missing reference")
+                for line in content.splitlines():
+                    match = CFG_REFERENCE.match(line.strip())
+                    if not match:
+                        continue
+                    target = match.group(1)
+                    if "$" in target or (repo / target).exists():
+                        continue
+                    if (path, target) in reported:
+                        continue
+                    reported.add((path, target))
+                    audit.add("include-cfg-file-missing", "error", path, None,
+                              f"!{target} is not in {repo}, and include_cfg "
+                              "stops at the first missing reference")
 
 
 def check_parameters(audit: Audit, invocations: list[Invocation]) -> None:
