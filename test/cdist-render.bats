@@ -56,6 +56,10 @@ else
 fi
 if test "$host" = "fail.example.com"; then
    echo "ERROR: fake cdist failed on purpose" >&2
+   mkdir -p "$data/object/__file/etc/failed/$marker"
+   printf '__file/etc/failed\n' > "$data/object/__file/etc/failed/$marker/require"
+   rmdir "$data/object/__file/etc/example/$marker/parameter" 2>/dev/null
+   echo "ERROR: fake cdist failed on purpose" >&2
    exit 1
 fi
 exit 0

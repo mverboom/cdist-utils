@@ -271,11 +271,18 @@ def render_environment(context: dict[str, object], host: str) -> \
     return env
 
 
-def find_tree(context: dict[str, object], host: str) -> Path | None:
-    """Return the directory holding the objects of a finished run."""
+def find_tree(context: dict[str, object], host: str, ok: bool) -> Path | None:
+    """Return the directory holding the objects of the run that just finished.
+
+    A successful run moves its data into the cache; a failed one leaves it in
+    the output directory. The cache is only trusted when the run succeeded,
+    otherwise the previous render's data would be read again.
+    """
     work = context["work"] / host
-    candidates = [context["home"] / ".cdist" / "cache" / host,
-                  *sorted((work / "out").glob("*/data"))]
+    candidates: list[Path] = []
+    if ok:
+        candidates.append(context["home"] / ".cdist" / "cache" / host)
+    candidates += sorted((work / "out").glob("*/data"))
     for candidate in candidates:
         if (candidate / "object_marker").is_file():
             return candidate
@@ -370,6 +377,8 @@ def render_host(context: dict[str, object], host: str,
     work = context["work"] / host
     shutil.rmtree(work, ignore_errors=True)
     work.mkdir(parents=True, exist_ok=True)
+    cached = context["home"] / ".cdist" / "cache" / host
+    shutil.rmtree(cached, ignore_errors=True)
     log = work / "render.log"
     started = time.time()
     with log.open("w") as handle:
@@ -377,7 +386,7 @@ def render_host(context: dict[str, object], host: str,
                                 env=render_environment(context, host),
                                 stdout=handle,
                                 stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL)
-    data = find_tree(context, host)
+    data = find_tree(context, host, result.returncode == 0)
     snapshot: dict[str, object] = {
         "host": host,
         "ok": result.returncode == 0,
