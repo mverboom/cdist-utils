@@ -225,8 +225,8 @@ PY
    cp -a "$CR_FIX/snap" "$CR_FIX/parallel"
    rm -rf "$CR_FIX/snap"
    run_render host.example.com other.example.com >/dev/null
-   run diff <(jq -S . "$CR_FIX/parallel/host.example.com.json") \
-      <(jq -S . "$CR_FIX/snap/host.example.com.json")
+   run diff <(jq -S 'del(.seconds)' "$CR_FIX/parallel/host.example.com.json") \
+      <(jq -S 'del(.seconds)' "$CR_FIX/snap/host.example.com.json")
    [ "$status" -eq 0 ]
 }
 
