@@ -1,0 +1,716 @@
+#!/usr/bin/env python3
+#
+# cdist-audit
+#
+# Static audit of a cdist configuration directory: no host is contacted and no
+# code is executed, everything is derived from the configuration, the inventory
+# and (optionally) the recorded explorer output.
+#
+# See CDIST-AUDIT.md for the list of checks.
+
+"""Static audit for a cdist configuration directory."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import shlex
+import shutil
+import subprocess
+import sys
+import time
+from collections import defaultdict
+from dataclasses import dataclass
+from pathlib import Path
+
+VERSION = "0.1.0"
+
+# shell keywords after which a new command may start
+COMMAND_STARTERS = frozenset({
+    "!", "{", "(", "do", "elif", "else", "if", "then", "time", "until", "while",
+})
+# tokens that end a command
+COMMAND_ENDERS = frozenset({";", "&&", "||", "|", "&", "\n"})
+ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+TYPE_TOKEN = re.compile(r"^__[A-Za-z0-9_-]+$")
+MANIFEST_NAME = re.compile(r"^[A-Za-z0-9_.-]+$")
+LOCAL_ASSIGNMENT = re.compile(r"(?:^|\s)(?:local\s+)?([A-Za-z_][A-Za-z0-9_]*)=")
+EXPLORER_REFERENCE = re.compile(r"\$\{?(e)_([A-Za-z0-9_]+)")
+TAG_REFERENCE = re.compile(r"\$\{?(t)_([A-Za-z0-9_]+)")
+FILES_REFERENCE = re.compile(r"\$files/([A-Za-z0-9_./@+-]+)")
+PARAMETER_KINDS = ("required", "optional", "boolean", "required_multiple",
+                   "optional_multiple", "default", "deprecated")
+# types that manage a path and therefore may conflict with each other
+PATH_TYPES = frozenset({"__file", "__config_file", "__directory", "__link",
+                        "__block", "__line", "__key_value", "__dot_file"})
+SEVERITY_ORDER = {"error": 0, "warning": 1, "info": 2}
+
+
+@dataclass
+class Finding:
+    """One audit finding."""
+
+    check: str
+    severity: str
+    path: Path
+    line: int | None
+    message: str
+
+    def render(self, root: Path) -> str:
+        """Return the finding as a single grep-able line."""
+        try:
+            shown: Path | str = self.path.relative_to(root)
+        except ValueError:
+            shown = self.path
+        where = f"{shown}:{self.line}" if self.line else str(shown)
+        return f"{where}: {self.severity}: {self.check}: {self.message}"
+
+    def as_dict(self) -> dict[str, object]:
+        """Return the finding as a json friendly dict."""
+        return {
+            "check": self.check,
+            "severity": self.severity,
+            "path": str(self.path),
+            "line": self.line,
+            "message": self.message,
+        }
+
+
+@dataclass
+class Invocation:
+    """A cdist type invocation found in a manifest or type manifest."""
+
+    type_name: str
+    object_id: str
+    params: dict[str, str | None]
+    path: Path
+    line: int
+
+
+class Audit:
+    """Holds the resolved configuration and the collected findings."""
+
+    def __init__(self, root: Path, config_dirs: list[Path],
+                 upstream: Path | None, inventory: Path | None,
+                 explore: Path | None, stale_days: int) -> None:
+        self.root = root
+        self.config_dirs = config_dirs
+        self.upstream = upstream
+        self.inventory = inventory
+        self.explore = explore
+        self.stale_days = stale_days
+        self.findings: list[Finding] = []
+        self.types: dict[str, Path] = {}
+        self.explorers: dict[str, Path] = {}
+        self.tags: set[str] = set()
+        self.files_dirs = [base / "files" for base in config_dirs]
+        self._declared: dict[str, set[str]] = {}
+        self._shell_files: list[Path] | None = None
+
+    def add(self, check: str, severity: str, path: Path, line: int | None,
+            message: str) -> None:
+        """Record a finding."""
+        self.findings.append(Finding(check, severity, path, line, message))
+
+    def load(self) -> None:
+        """Resolve the effective type set, explorer set and inventory tags."""
+        for base in [self.upstream, *self.config_dirs]:
+            if not base:
+                continue
+            self.types.update({
+                entry.name: entry for entry in _entries(base / "type")
+                if entry.name.startswith("__")
+            })
+            self.explorers.update({
+                entry.name: entry for entry in _entries(base / "explorer")
+            })
+        if self.inventory and self.inventory.is_dir():
+            for entry in _entries(self.inventory):
+                if not entry.is_file():
+                    continue
+                self.tags.update(
+                    tag.strip() for tag in
+                    entry.read_text(errors="replace").split(",") if tag.strip()
+                )
+
+    def shell_files(self) -> list[Path]:
+        """Return every shell file that takes part in a cdist run."""
+        if self._shell_files is None:
+            found: list[Path] = []
+            for base in self.config_dirs:
+                manifest = base / "manifest"
+                if manifest.is_dir():
+                    found += [path for path in manifest.rglob("*")
+                              if path.is_file() and ".git" not in path.parts]
+                for type_dir in _entries(base / "type"):
+                    if not type_dir.is_dir() or ".git" in type_dir.parts:
+                        continue
+                    found += [path for path in type_dir.rglob("*")
+                              if path.is_file() and is_shell_name(type_dir, path)]
+            self._shell_files = sorted(set(found))
+        return self._shell_files
+
+    def declared(self, type_name: str) -> set[str]:
+        """Return the parameter names a type declares."""
+        if type_name not in self._declared:
+            path = self.types.get(type_name)
+            names: set[str] = set()
+            if path:
+                for kind in PARAMETER_KINDS:
+                    names |= _read_path(path / "parameter" / kind)
+            self._declared[type_name] = names
+        return self._declared[type_name]
+
+    def required(self, type_name: str) -> set[str]:
+        """Return the required parameter names a type declares."""
+        path = self.types.get(type_name)
+        return _read_path(path / "parameter" / "required") if path else set()
+
+    def file_missing(self, relative: str) -> bool:
+        """Return whether a relative $files/... path exists nowhere."""
+        return not any((base / relative).exists() for base in self.files_dirs)
+
+
+def is_shell_name(type_dir: Path, path: Path) -> bool:
+    """Return whether a file inside a type directory is a shell script."""
+    if path.parent == type_dir / "explorer":
+        return True
+    return path.name == "manifest" or path.name.startswith(("gencode-", "code-"))
+
+
+def _entries(directory: Path | None) -> list[Path]:
+    """Return the entries of a directory, tolerating a missing directory."""
+    if not directory or not directory.is_dir():
+        return []
+    return list(directory.iterdir())
+
+
+def _read_path(path: Path) -> set[str]:
+    """Read a parameter list file or directory and return the names."""
+    if path.is_file():
+        return {line.strip() for line in
+                path.read_text(errors="replace").splitlines()
+                if line.strip() and not line.startswith("#")}
+    if path.is_dir():
+        return {entry.name for entry in path.iterdir()}
+    return set()
+
+
+def find_upstream_conf(explicit: Path | None) -> Path | None:
+    """Locate the conf directory shipped with the cdist installation."""
+    candidates: list[Path] = []
+    if explicit:
+        candidates.append(explicit)
+    for variable in ("CDIST_UPSTREAM_CONF", "CDIST_INSTALL"):
+        value = os.environ.get(variable)
+        if value:
+            candidates += [Path(value) / "cdist" / "conf", Path(value) / "conf"]
+    binary = shutil.which("cdist")
+    if binary:
+        base = Path(binary).resolve().parent.parent
+        candidates += [base / "cdist" / "conf", base / "conf"]
+    for candidate in candidates:
+        if (candidate / "type").is_dir():
+            return candidate
+    return None
+
+
+def logical_lines(text: str) -> list[tuple[int, str]]:
+    """Split shell text into (first line number, statement) pairs.
+
+    Backslash continuations are joined so the line number points at the start
+    of the statement.
+    """
+    result: list[tuple[int, str]] = []
+    buffer: list[str] = []
+    start = 0
+    for number, raw in enumerate(text.splitlines(), start=1):
+        if not buffer:
+            start = number
+        continued = raw.endswith("\\")
+        buffer.append(raw[:-1] if continued else raw)
+        if not continued:
+            result.append((start, "\n".join(buffer)))
+            buffer = []
+    if buffer:
+        result.append((start, "\n".join(buffer)))
+    return result
+
+
+def tokenize(statement: str) -> list[str]:
+    """Tokenize one shell statement, returning [] when it cannot be parsed."""
+    lexer = shlex.shlex(statement, posix=True, punctuation_chars=True)
+    lexer.whitespace_split = True
+    lexer.commenters = "#"
+    try:
+        return list(lexer)
+    except ValueError:
+        return []
+
+
+def collect_params(tokens: list[str], start: int) -> dict[str, str | None]:
+    """Collect the --parameters of one invocation from a token list."""
+    params: dict[str, str | None] = {}
+    index = start
+    while index < len(tokens):
+        token = tokens[index]
+        if token in COMMAND_ENDERS or token in COMMAND_STARTERS or \
+                (index > start and TYPE_TOKEN.match(token)):
+            break
+        if token.startswith("--") and len(token) > 2:
+            name, separator, value = token[2:].partition("=")
+            if not separator and index + 1 < len(tokens) and \
+                    not tokens[index + 1].startswith("--"):
+                value = tokens[index + 1]
+            params[name] = value or None
+        index += 1
+    return params
+
+
+def first_object_id(tokens: list[str], start: int) -> str:
+    """Return the object id of an invocation, empty for singletons."""
+    for token in tokens[start:]:
+        if token in COMMAND_ENDERS or token in COMMAND_STARTERS:
+            break
+        if token.startswith("--") or ASSIGNMENT.match(token):
+            break
+        return token
+    return ""
+
+
+def scan_invocations(path: Path, text: str) -> list[Invocation]:
+    """Return every cdist type invocation in a shell file."""
+    found: list[Invocation] = []
+    for number, statement in logical_lines(text):
+        tokens = tokenize(statement)
+        command_start = True
+        depth = 0
+        for index, token in enumerate(tokens):
+            if token == "(":
+                depth += 1
+                command_start = True
+                continue
+            if token == ")":
+                depth = max(0, depth - 1)
+                command_start = True
+                continue
+            if depth:
+                continue
+            if token in COMMAND_ENDERS or token in COMMAND_STARTERS:
+                command_start = True
+                continue
+            if command_start and ASSIGNMENT.match(token):
+                continue
+            if command_start and TYPE_TOKEN.match(token) and \
+                    not (index + 1 < len(tokens) and
+                         tokens[index + 1] == ")"):
+                found.append(Invocation(token, first_object_id(tokens, index + 1),
+                                        collect_params(tokens, index + 1), path,
+                                        number))
+                command_start = False
+                continue
+            command_start = False
+    return found
+
+
+def collect_requires(path: Path, text: str) -> list[tuple[int, str]]:
+    """Return the (line, target) pairs of every require/autorequire value."""
+    found: list[tuple[int, str]] = []
+    for number, statement in logical_lines(text):
+        tokens = tokenize(statement)
+        index = 0
+        while index < len(tokens):
+            token = tokens[index]
+            value: str | None = None
+            if token in ("-r", "--require", "--autorequire", "require",
+                         "autorequire"):
+                if index + 1 < len(tokens):
+                    nxt = tokens[index + 1]
+                    if nxt == "=" and index + 2 < len(tokens):
+                        value = tokens[index + 2]
+                        index += 1
+                    else:
+                        value = nxt
+            elif token.startswith(("require=", "autorequire=")):
+                value = token.split("=", 1)[1]
+            if value:
+                found += [(number, target) for target in value.split()
+                          if target.startswith("__")]
+            index += 1
+    return found
+
+
+def check_types(audit: Audit, invocations: list[Invocation]) -> None:
+    """Report invocations and requirements using a type that does not exist."""
+    for invocation in invocations:
+        if invocation.type_name not in audit.types:
+            audit.add("type-missing", "error", invocation.path, invocation.line,
+                      f"type {invocation.type_name} does not exist")
+    for path in audit.shell_files():
+        for line, target in collect_requires(path, path.read_text(
+                errors="replace")):
+            name = target.split("/", 1)[0]
+            if name not in audit.types:
+                audit.add("require-missing", "error", path, line,
+                          f"require target {target} uses unknown type {name}")
+
+
+def check_variables(audit: Audit, path: Path, text: str) -> None:
+    """Report explorer and tag variables that are not defined anywhere."""
+    assigned = set(LOCAL_ASSIGNMENT.findall(text))
+    for number, statement in logical_lines(text):
+        for kind, name, pattern in (("e", "explorers", EXPLORER_REFERENCE),
+                                    ("t", "tags", TAG_REFERENCE)):
+            for match in pattern.finditer(statement):
+                full = f"{match.group(1)}_{match.group(2)}"
+                if full in assigned:
+                    continue
+                if kind == "e" and not audit.explorers.get(match.group(2)):
+                    audit.add("explorer-undefined", "error", path, number,
+                              f"${full} is not provided by any explorer")
+                if kind == "t" and audit.tags and \
+                        match.group(2) not in audit.tags:
+                    audit.add("tag-undefined", "warning", path, number,
+                              f"${full} is not defined in the inventory")
+
+
+def check_sources(audit: Audit, path: Path, text: str) -> None:
+    """Report literal $files/... references that point nowhere."""
+    for number, statement in logical_lines(text):
+        for match in FILES_REFERENCE.finditer(statement):
+            if statement[match.end():match.end() + 1] in ("$", "{"):
+                continue  # built at runtime, only a real run can tell
+            target = match.group(1)
+            if target.endswith("/") or "$" in target:
+                continue
+            if audit.file_missing(target):
+                audit.add("source-missing", "error", path, number,
+                          f"$files/{target} does not exist")
+
+
+def find_manifest(audit: Audit, name: str) -> Path | None:
+    """Search the manifest directories for a manifest with the given name."""
+    for base in audit.config_dirs:
+        manifest = base / "manifest"
+        for candidate in [manifest / name, *manifest.glob(f"*/{name}")]:
+            if candidate.is_file():
+                return candidate
+    return None
+
+
+def expand_files(audit: Audit, argument: str) -> Path | None:
+    """Resolve a $files/... argument of the primary configuration directory."""
+    if argument.startswith("${files}/"):
+        tail = argument[len("${files}/"):]
+    elif argument.startswith("$files/"):
+        tail = argument[len("$files/"):]
+    else:
+        return None
+    if "$" in tail:
+        return None
+    return audit.files_dirs[0] / tail
+
+
+def check_includes(audit: Audit, path: Path, text: str) -> None:
+    """Report include and include_cfg references that cannot be resolved."""
+    for number, statement in logical_lines(text):
+        tokens = tokenize(statement)
+        for index, token in enumerate(tokens):
+            if index + 1 >= len(tokens):
+                break
+            argument = tokens[index + 1].strip("'\"")
+            if token in ("include", "include_once") and \
+                    MANIFEST_NAME.match(argument):
+                if not find_manifest(audit, argument):
+                    audit.add("include-missing", "error", path, number,
+                              f"include {argument} not found")
+            if token == "include_cfg":
+                resolved = expand_files(audit, argument)
+                if resolved and not resolved.is_dir():
+                    audit.add("include-cfg-repo-missing", "error", path, number,
+                              f"include_cfg repo {argument} is not a directory")
+
+
+def check_parameters(audit: Audit, invocations: list[Invocation]) -> None:
+    """Report unknown parameters and required parameters nobody passes."""
+    seen: dict[str, set[str]] = defaultdict(set)
+    for invocation in invocations:
+        declared = audit.declared(invocation.type_name)
+        for name in invocation.params:
+            if name in ("require", "autorequire"):
+                continue
+            seen[invocation.type_name].add(name)
+            if declared and name not in declared:
+                audit.add("param-unknown", "error", invocation.path,
+                          invocation.line,
+                          f"--{name} is not a parameter of "
+                          f"{invocation.type_name}")
+    for type_name, names in sorted(seen.items()):
+        for name in sorted(audit.required(type_name) - names):
+            audit.add("param-required-missing", "warning",
+                      audit.types[type_name], None,
+                      f"required parameter --{name} of {type_name} is never "
+                      "passed literally at any call site")
+
+
+def check_path_conflicts(audit: Audit, invocations: list[Invocation]) -> None:
+    """Report the same path being managed literally from several manifests."""
+    owners: dict[tuple[str, str], dict[Path, int]] = defaultdict(dict)
+    for invocation in invocations:
+        if invocation.type_name not in PATH_TYPES or not invocation.object_id:
+            continue
+        if "$" in invocation.object_id:
+            continue
+        owners[(invocation.type_name, invocation.object_id)][
+            invocation.path] = invocation.line
+    for (type_name, object_id), files in sorted(owners.items()):
+        if len(files) < 2:
+            continue
+        first = sorted(files)[0]
+        others = ", ".join(sorted(path.name for path in files if path != first))
+        audit.add("path-conflict", "warning", first, files[first],
+                  f"{type_name} {object_id} is also declared in: {others}")
+
+
+def check_syntax(audit: Audit, shellcheck: bool) -> None:
+    """Run bash -n and optionally shellcheck over every shell file."""
+    for path in audit.shell_files():
+        result = subprocess.run(["bash", "-n", str(path)],
+                                capture_output=True, text=True)
+        if result.returncode != 0:
+            message = (result.stderr.strip().splitlines() or
+                       ["syntax error"])[-1]
+            audit.add("syntax", "error", path, None, message)
+            continue
+        if not shellcheck or not shutil.which("shellcheck"):
+            continue
+        result = subprocess.run(
+            ["shellcheck", "-s", "bash", "--severity=error", "--format=gcc",
+             str(path)], capture_output=True, text=True)
+        for line in result.stdout.splitlines():
+            match = re.match(r"^[^:]+:(\d+):\d+: (.*)$", line)
+            if match:
+                audit.add("shellcheck", "error", path, int(match.group(1)),
+                          match.group(2).strip())
+
+
+def check_hygiene(audit: Audit) -> None:
+    """Report editor leftovers and broken symlinks."""
+    for path in audit.shell_files():
+        if path.name.endswith("~") or ".swp" in path.name or \
+                path.name.startswith(".#"):
+            audit.add("editor-leftover", "warning", path, None,
+                      f"editor leftover {path.name} inside the configuration")
+    for base in audit.config_dirs:
+        for sub in ("type", "manifest", "explorer"):
+            for entry in _entries(base / sub):
+                if entry.is_symlink() and not entry.exists():
+                    audit.add("symlink-broken", "error", entry, None,
+                              f"symlink ___{entry.name} points at "
+                              f"{entry.resolve()} which is missing")
+        for entry in _entries(base):
+            if entry.is_symlink() and not entry.exists():
+                audit.add("symlink-broken", "error", entry, None,
+                          f"symlink points at {entry.resolve()} which is "
+                          "missing")
+
+
+def check_dead_code(audit: Audit) -> None:
+    """Report types, explorers and manifests nothing refers to."""
+    text = "\n".join(path.read_text(errors="replace")
+                     for path in audit.shell_files())
+    referenced = set(re.findall(r"__[A-Za-z0-9_-]+", text))
+    for name, path in sorted(audit.types.items()):
+        if audit.upstream and str(path).startswith(str(audit.upstream)):
+            continue
+        if name in referenced:
+            continue
+        audit.add("type-unused", "info", path, None,
+                  f"{name} is not referenced from the configuration")
+    for name, path in sorted(audit.explorers.items()):
+        if audit.upstream and str(path).startswith(str(audit.upstream)):
+            continue
+        if re.search(rf"(^|[^A-Za-z0-9_])e_{re.escape(name)}\b", text):
+            continue
+        audit.add("explorer-unused", "info", path, None,
+                  f"explorer {name} is not used by the configuration")
+    included = set(re.findall(r"include(?:_once)?\s+([^\s;\"']+)", text))
+    for base in audit.config_dirs:
+        manifest = base / "manifest"
+        for path in manifest.rglob("*"):
+            if path.is_dir() or "autorun" in path.parts:
+                continue
+            if path.name == "init" or path.name in included or \
+                    path.parent == manifest:
+                continue
+            audit.add("manifest-unreferenced", "info", path, None,
+                      "not included by anything, only reachable via "
+                      "CDISTACTION / runcdist -o")
+
+
+def check_inventory(audit: Audit) -> None:
+    """Report unused tags, stale explorer output and hosts without data."""
+    text = "\n".join(path.read_text(errors="replace")
+                     for path in audit.shell_files())
+    if audit.tags:
+        used = set(re.findall(r"\$\{?t_([A-Za-z0-9_]+)", text))
+        unused = sorted(audit.tags - used)
+        if unused:
+            audit.add("tag-unused", "info", audit.inventory or audit.root, None,
+                      "tags not used by any manifest: " + ", ".join(unused))
+    if not audit.explore:
+        return
+    known = {entry.name for entry in _entries(audit.explore)
+             if entry.is_dir()}
+    now = time.time()
+    for name in sorted(known):
+        stamps = [entry.stat().st_mtime
+                  for entry in _entries(audit.explore / name)
+                  if entry.is_file()]
+        if not stamps:
+            continue
+        age = int((now - max(stamps)) / 86400)
+        if age > audit.stale_days:
+            audit.add("host-stale", "warning", audit.explore / name, None,
+                      f"{name}: newest explorer output is {age} days old, the "
+                      "last run for this host probably fails or never happens")
+    if audit.inventory:
+        for entry in sorted(_entries(audit.inventory)):
+            if entry.is_file() and entry.name not in known:
+                audit.add("explore-missing", "warning", entry, None,
+                          f"{entry.name} is in the inventory but has no "
+                          "explorer data")
+
+
+def build_parser() -> argparse.ArgumentParser:
+    """Return the command line parser."""
+    parser = argparse.ArgumentParser(
+        prog="cdist-audit",
+        description="Static audit of a cdist configuration directory.",
+        epilog="Exit status is 1 when errors were found, else 0.",
+    )
+    parser.add_argument("--version", action="version", version=VERSION)
+    parser.add_argument("-c", "--config-dir", action="append", default=[],
+                        type=Path, metavar="DIR",
+                        help="configuration directory (repeatable, later wins)")
+    parser.add_argument("-u", "--upstream-conf", type=Path, metavar="DIR",
+                        help="conf directory of the cdist installation")
+    parser.add_argument("-i", "--inventory", type=Path, metavar="DIR",
+                        help="inventory directory")
+    parser.add_argument("-e", "--explore", type=Path, metavar="DIR",
+                        help="directory with recorded explorer output")
+    parser.add_argument("--stale-days", type=int, default=30, metavar="N",
+                        help="age in days after which explorer data is stale")
+    parser.add_argument("--no-shellcheck", action="store_true",
+                        help="skip shellcheck, run bash -n only")
+    parser.add_argument("--only", action="append", default=[], metavar="CHECK",
+                        help="only run checks whose name starts with CHECK")
+    parser.add_argument("--json", action="store_true",
+                        help="write the findings as json")
+    parser.add_argument("-q", "--quiet", action="store_true",
+                        help="only print the summary")
+    parser.add_argument("--strict", action="store_true",
+                        help="let warnings fail the run as well")
+    return parser
+
+
+def resolve(args: argparse.Namespace) -> Audit:
+    """Build the audit context from the arguments and the environment."""
+    config_dirs = list(args.config_dir)
+    if not config_dirs:
+        config_dirs = [Path(os.environ.get("CDIST_CONFIG_DIR") or
+                            Path.home() / "config")]
+    inventory = args.inventory or Path(
+        os.environ.get("CDIST_INVENTORY") or Path.home() / ".cdist" / "inventory")
+    explore = args.explore or (
+        Path(os.environ["CDIST_EXPLORE"]) if os.environ.get("CDIST_EXPLORE")
+        else None)
+    return Audit(
+        root=config_dirs[0],
+        config_dirs=[path.resolve() for path in config_dirs],
+        upstream=find_upstream_conf(args.upstream_conf),
+        inventory=inventory if inventory.is_dir() else None,
+        explore=explore if explore and explore.is_dir() else None,
+        stale_days=args.stale_days,
+    )
+
+
+def run_checks(audit: Audit, args: argparse.Namespace) -> None:
+    """Run the selected checks."""
+    audit.load()
+
+    def selected(*names: str) -> bool:
+        if not args.only:
+            return True
+        return any(name.startswith(prefix)
+                   for name in names for prefix in args.only)
+
+    needs_invocations = selected("type-missing", "require-missing", "param-",
+                                 "path-conflict")
+    needs_variables = selected("explorer-undefined", "tag-undefined")
+    needs_sources = selected("source-missing")
+    needs_includes = selected("include-missing", "include-cfg-repo-missing")
+
+    invocations: list[Invocation] = []
+    for path in audit.shell_files():
+        text = path.read_text(errors="replace")
+        if needs_invocations:
+            invocations += scan_invocations(path, text)
+        if needs_variables:
+            check_variables(audit, path, text)
+        if needs_sources:
+            check_sources(audit, path, text)
+        if needs_includes:
+            check_includes(audit, path, text)
+
+    if selected("type-missing", "require-missing"):
+        check_types(audit, invocations)
+    if selected("param-"):
+        check_parameters(audit, invocations)
+    if selected("path-conflict"):
+        check_path_conflicts(audit, invocations)
+    if selected("syntax", "shellcheck"):
+        check_syntax(audit, not args.no_shellcheck)
+    if selected("editor-leftover", "symlink-broken"):
+        check_hygiene(audit)
+    if selected("type-unused", "explorer-unused", "manifest-unreferenced"):
+        check_dead_code(audit)
+    if selected("tag-unused", "host-stale", "explore-missing"):
+        check_inventory(audit)
+
+
+def report(audit: Audit, args: argparse.Namespace) -> int:
+    """Print the findings and return the exit status."""
+    findings = sorted(audit.findings, key=lambda item: (
+        SEVERITY_ORDER.get(item.severity, 9), item.check, str(item.path),
+        item.line or 0))
+    counts: dict[str, int] = defaultdict(int)
+    for finding in findings:
+        counts[finding.severity] += 1
+    if args.json:
+        print(json.dumps([finding.as_dict() for finding in findings], indent=2))
+    elif not args.quiet:
+        for finding in findings:
+            print(finding.render(audit.root))
+    if not args.json:
+        summary = ", ".join(f"{counts[key]} {key}" for key in
+                            ("error", "warning", "info"))
+        print(f"cdist-audit: {summary} in {len(audit.shell_files())} files "
+              f"({audit.root})")
+    if counts["error"]:
+        return 1
+    return 1 if args.strict and counts["warning"] else 0
+
+
+def main() -> int:
+    """Entry point."""
+    args = build_parser().parse_args()
+    audit = resolve(args)
+    run_checks(audit, args)
+    return report(audit, args)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -38,11 +38,17 @@ builds a query interactively.
 
 Create a cdist inventory based on explorer output.
 
+### cdist-audit
+
+Static audit of a cdist configuration: reports types, source files, explorer
+variables, parameters and manifests that do not hold up, without contacting a
+single host. See `CDIST-AUDIT.md` for the full description.
+
 ### initial-manifest
 
 An example initial manifest I use and integrates part of the other scripts.
 
 ## Tests
 
-The `eq` test suite uses [bats](https://github.com/bats-core/bats-core) and
-lives in `test/`. Run it from the repository root with `bats test`.
+The test suites use [bats](https://github.com/bats-core/bats-core) and live in
+`test/`. Run them from the repository root with `bats test`.
