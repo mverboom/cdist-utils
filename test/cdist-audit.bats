@@ -220,8 +220,11 @@ assert_path() {
    assert_message path-conflict '/etc/example'
 }
 
-@test "reports a !reference to a file that is gone" {
+@test "reports a !reference to a file that is gone as a warning" {
    assert_check include-cfg-file-missing
+   run jq -r --arg check include-cfg-file-missing \
+      '.[] | select(.check == $check) | .severity' "$CA_FIX/out.json"
+   [ "$output" = "warning" ]
    assert_message include-cfg-file-missing '!missing.conf'
    run messages_of include-cfg-file-missing
    [[ "$output" != *"!present.conf"* ]]

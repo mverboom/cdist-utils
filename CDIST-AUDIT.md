@@ -91,14 +91,6 @@ one of its subdirectories.
 `include-cfg-repo-missing`
 The repository directory passed to `include_cfg` does not exist.
 
-`include-cfg-file-missing`
-A `!name` reference inside a key of an `include_cfg` repository points at a
-file that is not in that repository (that is where `include_cfg` looks it up). This matters more than it looks:
-`include_cfg` stops at the first missing reference, so everything after it in
-the same file - other references included - is silently dropped (the call sites
-swallow the error with `|| true`). One deleted file can therefore stop a whole
-block of configuration from ever being applied.
-
 `param-unknown`
 A `--parameter` is passed that the type does not declare. Quoted values and
 command substitutions are parsed properly, so flags inside a string do not
@@ -114,6 +106,18 @@ shellcheck reports an error severity finding (only with `--shellcheck`).
 A symlink in type, manifest, explorer or the configuration root points nowhere.
 
 ## warning
+
+`include-cfg-file-missing`
+A `!name` reference inside a key of an `include_cfg` repository points at a
+file that is not in that repository (that is where `include_cfg` looks it up).
+A warning and not an error, because the file can be missing on purpose: the
+`proxmox-ssh` manifest deletes the routing file of a Proxmox host whose
+container list it cannot read, and the file comes back when the host does. What
+made that dangerous was the consumer - `include_cfg` used to stop at the first
+missing reference and silently drop everything after it in the same key (it now
+reports the failure and keeps expanding). A dangling reference also means a
+line in the key that nobody cleaned up, for example after phasing out a Proxmox
+host.
 
 `tag-undefined`
 `$t_...` is used but the tag is not present in the inventory.

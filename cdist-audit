@@ -586,7 +586,7 @@ def check_cfg_references(audit: Audit) -> None:
                     if (path, target) in reported:
                         continue
                     reported.add((path, target))
-                    audit.add("include-cfg-file-missing", "error", path, None,
+                    audit.add("include-cfg-file-missing", "warning", path, None,
                               f"!{target} is not in {repo}, and include_cfg "
                               "stops at the first missing reference")
 
