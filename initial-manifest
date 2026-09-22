@@ -92,23 +92,28 @@ include_cfg() {
       include_find_cfg "$key" || return 1
    fi
 
+   # A reference that cannot be resolved is reported and skipped, but the rest
+   # of the file is still processed: returning here would silently drop every
+   # later reference too. A missing sshconfig routing file once took out the
+   # whole block of container routes that way.
+   local rc=0
    while read -r -u 5 line; do
       key="${line:1}"
       case "${line:0:1}" in
       @) include_cfg "$repo" "$key"
-         test "$?" -ne 0 && { echo "Error processing include $key" > /dev/stderr;
-                              return 1; }
+         test "$?" -ne 0 && { echo "Error processing include $key (from $_cfgfile)" > /dev/stderr;
+                              rc=1; }
       ;;
       !) if test -f "${repo}/${line:1}"; then
             echo "${line:1}"
          else
             echo "File $line does not exist (from $_cfgfile)" > /dev/stderr
-            return 1
+            rc=1
          fi
       ;;
       esac
    done 5< "$_cfgfile"
-   return 0
+   return "$rc"
 }
 
 # Pull explorer information into environment

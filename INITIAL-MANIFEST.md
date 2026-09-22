@@ -97,3 +97,19 @@ Copyright  ©  2014  Free Software Foundation, Inc.  License GPLv3+: GNU
 GPL version 3 or later <http://gnu.org/licenses/gpl.html>.
 This is free software: you are free  to  change  and  redistribute  it.
 There is NO WARRANTY, to the extent permitted by law.
+## include_cfg and missing references
+
+`include_cfg REPO KEY [DIR]...` reads the first `KEY` it finds in `DIR...`
+(`~/generic` style directories, searched in the order given) and expands:
+
+* `!file` - emit `file` if `REPO/file` exists;
+* `@key` - recurse into another key, resolved in the directories *after* the one
+  that provided the current key.
+
+A reference that cannot be resolved is reported on stderr and makes the call
+return 1, **but the remaining references in the file are still expanded**. That
+matters: returning at the first failure silently dropped every later reference,
+so a single missing file (a deleted sshconfig routing file, for example) took
+out a whole block of configuration without any visible error. Call sites
+therefore still need `|| true` when "no config for this user" is normal, and a
+missing reference is visible in the log.
