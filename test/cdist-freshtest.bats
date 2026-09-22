@@ -189,6 +189,20 @@ calls() {
    [[ "$output" == *"ct destroy fresh"* ]]
 }
 
+@test "the reachability check does not use the ssh control master" {
+   export FAKE_CT_FAIL=deploy
+   run_freshtest
+   [ "$CF_STATUS" -eq 0 ]
+   run calls
+   [[ "$output" == *"ControlMaster=no"* ]]
+   [[ "$output" == *"ControlPath=none"* ]]
+}
+
+@test "the reachability check has its own timeout" {
+   grep -q "kill-after" "$CF_TEST"
+   grep -q 'ControlMaster=no' "$CF_TEST"
+}
+
 @test "a deploy that leaves the host unreachable is retried once" {
    export FAKE_CT_FAIL=deploy
    export FAKE_SSH_OK=0

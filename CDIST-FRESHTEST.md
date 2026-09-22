@@ -62,6 +62,15 @@ The usual.
 (default `ct`), `CDIST_FRESHTEST_RUN` (default `runcdist`),
 `CDIST_FRESHTEST_WORK` (default `/tmp/cdist-freshtest`).
 
+# REACHABILITY CHECK
+
+Before configuring a host it created, cdist-freshtest waits until the host
+answers over ssh. That check deliberately bypasses the cdist user's ssh
+configuration: `-o ControlMaster=no -o ControlPath=none` plus an outer
+`timeout`, because a connection that ends up in the control socket of a
+multiplexed master connection waits forever instead of reporting the host as
+unreachable.
+
 # WHEN THE DEPLOY FAILS
 
 `ct deploy` runs cdist on the container immediately after creating it. That
