@@ -62,6 +62,22 @@ The usual.
 (default `ct`), `CDIST_FRESHTEST_RUN` (default `runcdist`),
 `CDIST_FRESHTEST_WORK` (default `/tmp/cdist-freshtest`).
 
+# CONTAINERS WITHOUT SSH
+
+`ct` builds containers that deliberately have **no sshd**: the Proxmox host
+runs a `pve-ssh-wrapper` and a `ct<id>` user per container, and the generated
+ssh config routes `ssh <container>` through `ct<id>@<pve-host>` into the
+container (`lxc-attach`). sshd-less means less attack surface, so container
+templates must not be judged by "is sshd running in there".
+
+What that means for this tool: a brand new container is reachable only once its
+entry exists in the generated ssh config (`config-pve.<pve-host>`, produced by
+the `proxmox-ssh` manifest and pushed to the cdist host by the `sshconfig`
+manifest). Until then ssh falls back to the container's own port 22, which
+nothing listens on. The test therefore logs how ssh would reach the host
+(`ssh -G` -> hostname/user) and the ssh error of every attempt, so a missing
+route is immediately visible instead of looking like an unreachable host.
+
 # REACHABILITY CHECK
 
 Before configuring a host it created, cdist-freshtest waits until the host

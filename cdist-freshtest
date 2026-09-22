@@ -127,25 +127,37 @@ probe() {
    test "$objects" -eq 0
 }
 
+# Report how ssh would reach the host: containers are reached through the
+# Proxmox host (hostname + a ct<id> user) and not through their own port 22, so
+# a missing entry in the generated ssh config is the usual reason why a brand
+# new container cannot be configured.
+ssh_route() {
+   local route
+   route=$("$SSH" -G "$FQDN" 2>/dev/null | sed -n 's/^\(hostname\|user\) /\1=/p' \
+      | tr '\n' ' ')
+   printf '%s' "${route:-unknown}"
+}
+
 # Wait until the newly created host answers over ssh. ct deploy runs cdist
-# immediately after creating the container, which fails when the name does not
-# resolve or sshd is not up yet; the container itself is fine at that point.
+# immediately after creating the container, which fails while the ssh route to
+# the new container is not in place yet; the container itself is fine then.
 wait_ssh() {
    local tries=0 output rc
    while test "$tries" -lt "$WAIT_TRIES"; do
       # No ControlMaster and an outer timeout: the cdist user's ~/.ssh/config
       # multiplexes connections, and a connection that sits in the control
       # socket would wait forever instead of reporting the host as unreachable.
-      if timeout --kill-after=5 "$(( ${WAIT_SLEEP:-5} + 15 ))" \
+      SSH_ERROR=$(timeout --kill-after=5 "$(( ${WAIT_SLEEP:-5} + 15 ))" \
             "$SSH" -o BatchMode=yes -o ConnectTimeout=5 \
             -o StrictHostKeyChecking=accept-new -o ControlMaster=no \
-            -o ControlPath=none "$FQDN" true > /dev/null 2>&1; then
+            -o ControlPath=none "$FQDN" true 2>&1 | tail -1) || true
+      if test -z "$SSH_ERROR"; then
          return 0
       fi
       rc=$?
-      output="ssh to $FQDN failed (exit $rc)"
+      output="ssh to $FQDN failed (exit $rc): ${SSH_ERROR:-no output}"
       tries=$(( tries + 1 ))
-      log "waiting for $FQDN to answer over ssh ($tries/$WAIT_TRIES)"
+      log "waiting for $FQDN to answer over ssh ($tries/$WAIT_TRIES): $output"
       test "$WAIT_SLEEP" -gt 0 && sleep "$WAIT_SLEEP"
    done
    printf '%s\n' "$output" >> "$LOG"
@@ -286,6 +298,8 @@ main() {
          fi
       fi
    fi
+
+   log "ssh route to $FQDN: $(ssh_route)"
 
    # The dry run after the first configuration is the actual test: whatever it
    # would still process is not idempotent.

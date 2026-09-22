@@ -198,6 +198,19 @@ calls() {
    [[ "$output" == *"ControlPath=none"* ]]
 }
 
+@test "the ssh route to the host is reported" {
+   run_freshtest --keep
+   [[ "$CF_OUT" == *"ssh route to fresh.lnw.verboom.net"* ]]
+}
+
+@test "an unreachable host reports the ssh error" {
+   export FAKE_CT_FAIL=deploy
+   export FAKE_SSH_OK=0
+   export CDIST_FRESHTEST_RETRIES=0
+   run_freshtest --keep
+   [[ "$CF_OUT" == *"Connection timed out"* ]]
+}
+
 @test "the reachability check has its own timeout" {
    grep -q "kill-after" "$CF_TEST"
    grep -q 'ControlMaster=no' "$CF_TEST"
