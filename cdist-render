@@ -418,27 +418,34 @@ def command_render(context: dict[str, object], args: argparse.Namespace) -> int:
             return 1
         hosts = sorted(entry.name for entry in explore.iterdir()
                        if entry.is_dir() and entry.name != ".git")
+    failures = 0
     snapshots: list[dict[str, object]] = []
     if args.jobs > 1 and len(hosts) > 1:
         with concurrent.futures.ThreadPoolExecutor(args.jobs) as pool:
-            snapshots = list(pool.map(
-                lambda host: render_host(context, host, args.keep_work),
-                hosts))
+            futures = [pool.submit(render_host, context, host, args.keep_work)
+                       for host in hosts]
+            for future in concurrent.futures.as_completed(futures):
+                snapshot = future.result()
+                snapshots.append(snapshot)
+                failures += report_host(snapshot)
     else:
-        snapshots = [render_host(context, host, args.keep_work)
-                     for host in hosts]
-    failures = 0
-    for snapshot in snapshots:
-        if not snapshot["ok"]:
-            failures += 1
-        print(f"{snapshot['host']}: "
-              f"{'ok' if snapshot['ok'] else 'FAILED'}, "
-              f"{len(snapshot['objects'])} objects, {snapshot['seconds']}s"
-              + (f" - {snapshot['error']}" if snapshot["error"] else ""))
+        for host in hosts:
+            snapshot = render_host(context, host, args.keep_work)
+            snapshots.append(snapshot)
+            failures += report_host(snapshot)
     write_index(context)
     print(f"cdist-render: rendered {len(hosts)} hosts into "
           f"{context['snapshot']}, {failures} failed")
     return 1 if failures else 0
+
+
+def report_host(snapshot: dict[str, object]) -> int:
+    """Print one rendered host and return 1 when it failed."""
+    print(f"{snapshot['host']}: {'ok' if snapshot['ok'] else 'FAILED'}, "
+          f"{len(snapshot['objects'])} objects, {snapshot['seconds']}s"
+          + (f" - {snapshot['error']}" if snapshot["error"] else ""),
+          flush=True)
+    return 0 if snapshot["ok"] else 1
 
 
 def config_revision(path: Path) -> str:
