@@ -44,8 +44,11 @@ host-stale and explore-missing checks.
 `--stale-days N`
 Age in days after which explorer output is considered stale (default 30).
 
-`--no-shellcheck`
-Only run `bash -n`, skip shellcheck.
+`--shellcheck`
+Also run shellcheck over every shell file and report its error severity
+findings. Off by default: 74 of them are deliberate `${e_packages[@]}` style
+unquoted array expansions in the current configuration, which drown out the
+real findings.
 
 `--only CHECK`
 Only run checks whose name starts with `CHECK`. Can be repeated.
@@ -97,7 +100,7 @@ count.
 `bash -n` rejects the file.
 
 `shellcheck`
-shellcheck reports an error severity finding.
+shellcheck reports an error severity finding (only with `--shellcheck`).
 
 `symlink-broken`
 A symlink in type, manifest, explorer or the configuration root points nowhere.

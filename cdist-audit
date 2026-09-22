@@ -660,8 +660,9 @@ def build_parser() -> argparse.ArgumentParser:
                         help="directory with recorded explorer output")
     parser.add_argument("--stale-days", type=int, default=30, metavar="N",
                         help="age in days after which explorer data is stale")
-    parser.add_argument("--no-shellcheck", action="store_true",
-                        help="skip shellcheck, run bash -n only")
+    parser.add_argument("--shellcheck", action="store_true",
+                        help="also run shellcheck (noisy: manifests use "
+                             "unquoted array expansion on purpose)")
     parser.add_argument("--only", action="append", default=[], metavar="CHECK",
                         help="only run checks whose name starts with CHECK")
     parser.add_argument("--json", action="store_true",
@@ -729,7 +730,7 @@ def run_checks(audit: Audit, args: argparse.Namespace) -> None:
     if selected("path-conflict"):
         check_path_conflicts(audit, invocations)
     if selected("syntax", "shellcheck"):
-        check_syntax(audit, not args.no_shellcheck)
+        check_syntax(audit, args.shellcheck)
     if selected("leftover-file", "symlink-broken"):
         check_hygiene(audit)
     if selected("type-unused", "explorer-unused", "manifest-unreferenced",

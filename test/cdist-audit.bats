@@ -100,7 +100,7 @@ EOF
 # Run the audit over the defect fixture and keep the json output.
 run_audit() {
    CA_STATUS=0
-   "$CA_AUDIT" --json --no-shellcheck -q \
+   "$CA_AUDIT" --json -q \
       -c "$CA_FIX/config" \
       -u "$CA_FIX/upstream/cdist/conf" \
       -i "$CA_FIX/inventory" \
@@ -311,8 +311,7 @@ OUTER
 }
 
 @test "a clean configuration has no errors and exits zero" {
-   run "$CA_AUDIT" -q -c "$CA_FIX/clean" -u "$CA_FIX/upstream/cdist/conf" \
-      --no-shellcheck
+   run "$CA_AUDIT" -q -c "$CA_FIX/clean" -u "$CA_FIX/upstream/cdist/conf"
    [ "$status" -eq 0 ]
    [[ "$output" == *"0 error"* ]]
 }
@@ -325,9 +324,13 @@ OUTER
    [ "$(jq -r '.[].check' <<<"$output" | sort -u)" = "source-missing" ]
 }
 
-@test "shellcheck reports its errors when enabled" {
+@test "shellcheck only runs when it is asked for" {
    command -v shellcheck >/dev/null || skip "shellcheck is not installed"
    run "$CA_AUDIT" --json -q -c "$CA_FIX/clean" -u "$CA_FIX/upstream/cdist/conf"
+   [ "$status" -eq 0 ]
+   [[ "$output" != *'"check": "shellcheck"'* ]]
+   run "$CA_AUDIT" --json --shellcheck -q -c "$CA_FIX/clean" \
+      -u "$CA_FIX/upstream/cdist/conf"
    [ "$status" -eq 1 ]
    [[ "$output" == *'"check": "shellcheck"'* ]]
 }
