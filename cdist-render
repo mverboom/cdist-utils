@@ -1,0 +1,483 @@
+#!/usr/bin/env python3
+#
+# cdist-render
+#
+# Render the cdist object tree for every host without touching any host:
+# global explorer output is replayed from the recorded explorer data, the
+# remote side is a local stub, and cdist runs with -n so no code is executed.
+#
+# The rendered trees are the baseline for impact analysis: render before a
+# change, render after it, and diff the two.
+#
+# See CDIST-RENDER.md.
+
+"""Render cdist object trees offline and diff them."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import time
+from collections import defaultdict
+from pathlib import Path
+
+VERSION = "0.1.0"
+
+FAKE_EXEC = """#!/bin/sh
+# Stand-in for ssh: drop the host argument and run the rest locally.
+shift
+cmd="$*"
+
+# Type explorers describe target state we do not have offline. A stub per
+# <type>/<explorer> provides a plausible answer; without one the explorer
+# returns nothing and the type decides for itself what that means.
+case "$cmd" in
+*conf/type/*/explorer/*)
+   rest="${cmd##*conf/type/}"
+   type="${rest%%/*}"
+   sub="${rest#*/}"
+   name="${sub#explorer/}"
+   name="${name%%[\\' ]*}"
+   oid=$(printf '%s' "$cmd" | sed -n 's/.*__object_id=\\([^ ;]*\\).*/\\1/p')
+   __object_id="$oid"
+   export __object_id
+   if test -f "$STUBS/$type/$name"; then
+      exec "$STUBS/$type/$name"
+   fi
+   exit 0
+   ;;
+esac
+exec /bin/sh -c "$cmd"
+"""
+
+FAKE_COPY = """#!/bin/bash
+# Stand-in for scp: the last argument is "host:path", copy locally instead.
+set -eu
+argv=( "$@" )
+dest="${argv[-1]}"
+unset 'argv[-1]'
+dest="${dest#*:}"
+cp -a -- "${argv[@]}" "$dest"
+"""
+
+EXPLORER_REPLAY = """#!/bin/sh
+# Replay the recorded explorer output of the target host.
+name="${0##*/}"
+for candidate in "$__target_host" "$__target_fqdn" "$__target_hostname"; do
+   file="$CDIST_EXPLORE/$candidate/$name"
+   if test -f "$file"; then
+      exec cat "$file"
+   fi
+done
+exit 0
+"""
+
+ERROR_LINE = re.compile(r"^(ERROR|error):? ?(.*)$")
+
+
+def build_parser() -> argparse.ArgumentParser:
+    """Return the command line parser."""
+    parser = argparse.ArgumentParser(
+        prog="cdist-render",
+        description="Render cdist object trees offline and diff them.",
+        epilog="The 'render' command never contacts a host and never executes "
+               "type code.",
+    )
+    parser.add_argument("--version", action="version", version=VERSION)
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    render = sub.add_parser("render", help="render hosts into the snapshot dir")
+    render.add_argument("hosts", nargs="*", help="hosts to render")
+    render.add_argument("-a", "--all", action="store_true",
+                        help="render every host that has explorer data")
+    common(render)
+
+    diff = sub.add_parser("diff", help="compare two snapshot directories")
+    diff.add_argument("baseline", type=Path, help="snapshot directory to diff "
+                      "against")
+    diff.add_argument("current", nargs="?", type=Path, default=None,
+                      help="snapshot directory to compare (default: --snapshot"
+                           "-dir)")
+    diff.add_argument("--json", action="store_true",
+                      help="write the differences as json")
+    diff.add_argument("-q", "--quiet", action="store_true",
+                      help="only print the summary")
+    diff.add_argument("--verbose", action="store_true",
+                      help="also list unchanged hosts")
+    common(diff)
+    return parser
+
+
+def common(parser: argparse.ArgumentParser) -> None:
+    """Add the options shared by render and diff."""
+    parser.add_argument("-c", "--config-dir", action="append", default=[],
+                        type=Path, metavar="DIR",
+                        help="configuration directory (repeatable, later wins)")
+    parser.add_argument("-u", "--upstream-conf", type=Path, metavar="DIR",
+                        help="conf directory of the cdist installation")
+    parser.add_argument("-e", "--explore", type=Path, metavar="DIR",
+                        help="recorded explorer output (default CDIST_EXPLORE)")
+    parser.add_argument("-w", "--work-dir", type=Path, metavar="DIR",
+                        default=Path("/tmp/cdist-render"),
+                        help="scratch directory (default /tmp/cdist-render)")
+    parser.add_argument("-s", "--snapshot-dir", type=Path, metavar="DIR",
+                        default=Path("rendered"),
+                        help="where the rendered trees are kept (default "
+                             "./rendered)")
+    parser.add_argument("-S", "--stubs", type=Path, metavar="DIR",
+                        default=None,
+                        help="directory with type explorer stubs "
+                             "(default: <work-dir>/stubs)")
+    parser.add_argument("--cdist", default="cdist", metavar="CMD",
+                        help="cdist binary to use")
+
+
+def find_upstream(explicit: Path | None) -> Path | None:
+    """Locate the conf directory shipped with the cdist installation."""
+    candidates: list[Path] = []
+    if explicit:
+        candidates.append(explicit)
+    for variable in ("CDIST_UPSTREAM_CONF", "CDIST_INSTALL"):
+        value = os.environ.get(variable)
+        if value:
+            candidates += [Path(value) / "cdist" / "conf", Path(value) / "conf"]
+    for candidate in candidates:
+        if (candidate / "type").is_dir():
+            return candidate
+    return None
+
+
+def resolve(args: argparse.Namespace) -> dict[str, object]:
+    """Resolve the locations used by both commands."""
+    config_dirs = list(args.config_dir) or [
+        Path(os.environ.get("CDIST_CONFIG_DIR") or Path.home() / "config")
+    ]
+    explore = args.explore or (
+        Path(os.environ["CDIST_EXPLORE"]) if os.environ.get("CDIST_EXPLORE")
+        else None)
+    stubs = args.stubs or args.work_dir / "stubs"
+    return {
+        "config_dirs": [path.resolve() for path in config_dirs],
+        "upstream": find_upstream(args.upstream_conf),
+        "explore": explore,
+        "work": args.work_dir,
+        "snapshot": args.snapshot_dir,
+        "stubs": stubs,
+        "cdist": args.cdist,
+    }
+
+
+def explorer_names(context: dict[str, object]) -> list[str]:
+    """Return the effective global explorer names."""
+    names: set[str] = set()
+    for base in [context["upstream"], *context["config_dirs"]]:
+        if base and (base / "explorer").is_dir():
+            names |= {entry.name for entry in (base / "explorer").iterdir()}
+    return sorted(names)
+
+
+def prepare_work(context: dict[str, object]) -> None:
+    """Create the wrappers and the explorer replay overlay."""
+    work = context["work"]
+    bin_dir = work / "bin"
+    overlay = work / "overlay" / "explorer"
+    overlay.mkdir(parents=True, exist_ok=True)
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    context["stubs"].mkdir(parents=True, exist_ok=True)
+    (bin_dir / "fake-exec").write_text(FAKE_EXEC)
+    (bin_dir / "fake-exec").chmod(0o755)
+    (bin_dir / "fake-copy").write_text(FAKE_COPY)
+    (bin_dir / "fake-copy").chmod(0o755)
+    for name in explorer_names(context):
+        script = overlay / name
+        if not script.exists() or script.read_text() != EXPLORER_REPLAY:
+            script.write_text(EXPLORER_REPLAY)
+            script.chmod(0o755)
+
+
+def render_command(context: dict[str, object], host: str) -> list[str]:
+    """Build the cdist command line for one host."""
+    work = context["work"] / host
+    command = [
+        str(context["cdist"]), "config",
+        "-n",
+        "--remote-exec", str(context["work"] / "bin" / "fake-exec"),
+        "--remote-copy", str(context["work"] / "bin" / "fake-copy"),
+        "-r", str(work / "remote"),
+        "-o", str(work / "out"),
+        "-C", str(work / "cache"),
+    ]
+    for config_dir in context["config_dirs"]:
+        command += ["-c", str(config_dir)]
+    command += ["-c", str(context["work"] / "overlay"), host]
+    return command
+
+
+def render_environment(context: dict[str, object]) -> dict[str, str]:
+    """Return the environment for a cdist run."""
+    env = dict(os.environ)
+    env["CDIST_BETA"] = "1"
+    env["STUBS"] = str(context["stubs"])
+    if context["explore"]:
+        env["CDIST_EXPLORE"] = str(context["explore"])
+    return env
+
+
+def find_tree(context: dict[str, object], host: str) -> Path | None:
+    """Return the directory holding the objects of a finished run."""
+    work = context["work"] / host
+    for candidate in (work / "cache", *sorted((work / "out").glob("*/data"))):
+        if (candidate / "object_marker").is_file():
+            return candidate
+    return None
+
+
+def parse_tree(data: Path) -> dict[str, object]:
+    """Convert a cdist cache directory into a stable, comparable structure."""
+    marker = (data / "object_marker").read_text().strip()
+    objects: list[dict[str, object]] = []
+    for path in sorted((data / "object").rglob(marker)):
+        # cdist keeps the object data in a directory named after the run's
+        # object marker; an older layout keeps it next to the marker file.
+        holder = path if path.is_dir() else path.parent
+        object_dir = path.parent
+        relative = object_dir.relative_to(data / "object").parts
+        if not relative:
+            continue
+        parameters: dict[str, str] = {}
+        parameter_path = holder / "parameter"
+        if parameter_path.is_dir():
+            for entry in sorted(parameter_path.iterdir()):
+                if entry.is_file():
+                    parameters[entry.name] = entry.read_text(
+                        errors="replace").strip()
+        objects.append({
+            "name": "/".join(relative),
+            "parameters": parameters,
+            "require": read_list(holder / "require"),
+            "autorequire": read_list(holder / "autorequire"),
+            "source": read_text(holder / "source"),
+            "state": read_text(holder / "state"),
+        })
+    return {
+        "objects": objects,
+        "order": read_order(data),
+        "messages": sorted(read_list(data / "messages")),
+    }
+
+
+def read_list(path: Path) -> list[str]:
+    """Read a file with one entry per line."""
+    if not path.is_file():
+        return []
+    return sorted(line.strip() for line in
+                  path.read_text(errors="replace").splitlines() if line.strip())
+
+
+def read_text(path: Path) -> str:
+    """Read a file, returning an empty string when it is absent."""
+    if not path.is_file():
+        return ""
+    return path.read_text(errors="replace").strip()
+
+
+def read_order(data: Path) -> list[str]:
+    """Read the typeorder file, the order in which cdist executes types."""
+    if not (data / "typeorder").is_file():
+        return []
+    return [line.strip() for line in
+            (data / "typeorder").read_text(errors="replace").splitlines()
+            if line.strip()]
+
+
+def first_error(log: Path) -> str:
+    """Return the first error message of a cdist run."""
+    if not log.is_file():
+        return ""
+    for line in log.read_text(errors="replace").splitlines():
+        match = ERROR_LINE.match(line.strip())
+        if match:
+            return match.group(2).strip()
+    return ""
+
+
+def render_host(context: dict[str, object], host: str) -> dict[str, object]:
+    """Render one host and write its snapshot file."""
+    snapshot_dir = context["snapshot"]
+    snapshot_dir.mkdir(parents=True, exist_ok=True)
+    work = context["work"] / host
+    shutil.rmtree(work, ignore_errors=True)
+    work.mkdir(parents=True, exist_ok=True)
+    log = work / "render.log"
+    started = time.time()
+    with log.open("w") as handle:
+        result = subprocess.run(render_command(context, host),
+                                env=render_environment(context), stdout=handle,
+                                stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL)
+    data = find_tree(context, host)
+    snapshot: dict[str, object] = {
+        "host": host,
+        "ok": result.returncode == 0,
+        "error": first_error(log) if result.returncode else "",
+        "seconds": round(time.time() - started, 2),
+    }
+    if data:
+        snapshot.update(parse_tree(data))
+    else:
+        snapshot.update({"objects": [], "order": [], "messages": []})
+    (snapshot_dir / f"{host}.json").write_text(
+        json.dumps(snapshot, indent=1, sort_keys=True) + "\n")
+    return snapshot
+
+
+def command_render(context: dict[str, object], args: argparse.Namespace) -> int:
+    """Render the requested hosts."""
+    prepare_work(context)
+    hosts = list(args.hosts)
+    if args.all or not hosts:
+        explore = context["explore"]
+        if not explore or not explore.is_dir():
+            print("cdist-render: no explorer data available, cannot render all")
+            return 1
+        hosts = sorted(entry.name for entry in explore.iterdir()
+                       if entry.is_dir() and entry.name != ".git")
+    failures = 0
+    for host in hosts:
+        snapshot = render_host(context, host)
+        state = "ok" if snapshot["ok"] else "FAILED"
+        if not snapshot["ok"]:
+            failures += 1
+        print(f"{host}: {state}, {len(snapshot['objects'])} objects, "
+              f"{snapshot['seconds']}s"
+              + (f" - {snapshot['error']}" if snapshot["error"] else ""))
+    print(f"cdist-render: rendered {len(hosts)} hosts into "
+          f"{context['snapshot']}, {failures} failed")
+    return 1 if failures else 0
+
+
+def load_snapshots(directory: Path) -> dict[str, dict[str, object]]:
+    """Load every snapshot in a directory."""
+    result: dict[str, dict[str, object]] = {}
+    if not directory.is_dir():
+        return result
+    for path in sorted(directory.glob("*.json")):
+        if path.name == "index.json":
+            continue
+        try:
+            snapshot = json.loads(path.read_text())
+        except json.JSONDecodeError:
+            continue
+        result[snapshot.get("host", path.stem)] = snapshot
+    return result
+
+
+def diff_host(before: dict[str, object], after: dict[str, object]) -> \
+        dict[str, list[str]]:
+    """Compare two rendered trees and describe the differences."""
+    changes: dict[str, list[str]] = defaultdict(list)
+    if before.get("ok") != after.get("ok"):
+        changes["status"].append(
+            f"run status changed: {'ok' if before.get('ok') else 'failed'} -> "
+            f"{'ok' if after.get('ok') else 'failed'} ({after.get('error', '')})")
+    old = {obj["name"]: obj for obj in before.get("objects", [])}
+    new = {obj["name"]: obj for obj in after.get("objects", [])}
+    for name in sorted(new.keys() - old.keys()):
+        changes["added"].append(name)
+    for name in sorted(old.keys() - new.keys()):
+        changes["removed"].append(name)
+    for name in sorted(old.keys() & new.keys()):
+        if old[name]["parameters"] != new[name]["parameters"]:
+            changes["parameters"].append(
+                f"{name}: {describe_parameters(old[name], new[name])}")
+        if set(old[name]["require"]) != set(new[name]["require"]):
+            changes["require"].append(
+                f"{name}: require {sorted(set(old[name]['require']))} -> "
+                f"{sorted(set(new[name]['require']))}")
+        if set(old[name]["autorequire"]) != set(new[name]["autorequire"]):
+            changes["autorequire"].append(name)
+    old_order = [name for name in before.get("order", []) if name in new]
+    new_order = [name for name in after.get("order", []) if name in old]
+    if old_order != new_order and len(old_order) > 1:
+        moved = [f"{name} ({old_order.index(name)} -> {new_order.index(name)})"
+                 for name in new_order if old_order.index(name) !=
+                 new_order.index(name)]
+        changes["order"].append(
+            f"{len(moved)} of {len(old_order)} common objects change position"
+            + (f", e.g. {', '.join(moved[:5])}" if moved else ""))
+    return changes
+
+
+def describe_parameters(old: dict[str, object], new: dict[str, object]) -> str:
+    """Describe the parameter differences of one object."""
+    before, after = old["parameters"], new["parameters"]
+    parts = []
+    for key in sorted(after.keys() - before.keys()):
+        parts.append(f"+{key}={after[key]}")
+    for key in sorted(before.keys() - after.keys()):
+        parts.append(f"-{key}")
+    for key in sorted(before.keys() & after.keys()):
+        if before[key] != after[key]:
+            parts.append(f"{key}: {before[key]} -> {after[key]}")
+    return ", ".join(parts)
+
+
+def command_diff(context: dict[str, object], args: argparse.Namespace) -> int:
+    """Diff two snapshot directories."""
+    baseline = load_snapshots(args.baseline)
+    current = load_snapshots(args.current or context["snapshot"])
+    if not baseline:
+        print(f"cdist-render: no snapshots in {args.baseline}")
+        return 2
+    report: dict[str, object] = {
+        "baseline": str(args.baseline),
+        "current": str(args.current or context["snapshot"]),
+        "new_hosts": sorted(current.keys() - baseline.keys()),
+        "gone_hosts": sorted(baseline.keys() - current.keys()),
+        "hosts": {},
+    }
+    changed = 0
+    for host in sorted(baseline.keys() & current.keys()):
+        changes = diff_host(baseline[host], current[host])
+        if changes:
+            changed += 1
+            report["hosts"][host] = changes
+    if args.json:
+        print(json.dumps(report, indent=1, sort_keys=True))
+    else:
+        if report["new_hosts"]:
+            print(f"hosts only in the current snapshot: "
+                  f"{', '.join(report['new_hosts'])}")
+        if report["gone_hosts"]:
+            print(f"hosts only in the baseline: "
+                  f"{', '.join(report['gone_hosts'])}")
+        for host, changes in report["hosts"].items():
+            total = sum(len(items) for items in changes.values())
+            print(f"{host}: {total} change(s)")
+            if args.quiet:
+                continue
+            for kind in ("status", "added", "removed", "parameters", "require",
+                         "autorequire", "order"):
+                for line in changes.get(kind, []):
+                    print(f"   {kind}: {line}")
+        print(f"cdist-render: {changed} of "
+              f"{len(baseline.keys() & current.keys())} hosts change, "
+              f"{len(report['new_hosts'])} new, {len(report['gone_hosts'])} gone")
+    return 1 if changed or report["new_hosts"] or report["gone_hosts"] else 0
+
+
+def main() -> int:
+    """Entry point."""
+    args = build_parser().parse_args()
+    context = resolve(args)
+    if args.command == "render":
+        return command_render(context, args)
+    return command_diff(context, args)
+
+
+if __name__ == "__main__":
+    sys.exit(main())
