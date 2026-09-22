@@ -42,6 +42,10 @@ brand new host can legitimately not be converged after the first run, for
 example because the inventory (and therefore the host's tags) is only generated
 afterwards - this option shows whether the second run fixes that.
 
+`-r`, `--retries N`
+How often to retry the deploy when the new host never becomes reachable
+(default 1). A retry destroys whatever may have been created first.
+
 `-t`, `--timeout N`
 Seconds per step (default 1800), so a hanging deploy or cdist run does not hang
 the test forever.
@@ -57,6 +61,16 @@ The usual.
 `CDIST_FRESHTEST_DOMAIN` (default `lnw.verboom.net`), `CDIST_FRESHTEST_CT`
 (default `ct`), `CDIST_FRESHTEST_RUN` (default `runcdist`),
 `CDIST_FRESHTEST_WORK` (default `/tmp/cdist-freshtest`).
+
+# WHEN THE DEPLOY FAILS
+
+`ct deploy` runs cdist on the container immediately after creating it. That
+regularly fails while the name does not resolve yet or sshd is still starting,
+even though the container itself is fine. So a failed deploy is not fatal here:
+if the host answers over ssh, cdist-freshtest configures it itself and carries
+on with the test (the verdict says so). If the host never answers, the test
+retries (see `--retries`) and only then gives up - always destroying what was
+created.
 
 # WHAT IT CREATES AND REMOVES
 

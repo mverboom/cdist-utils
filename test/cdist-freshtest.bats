@@ -60,8 +60,17 @@ echo "INFO: $host: Finished dry run in 2.00 seconds"
 exit 0
 FAKE
    chmod 755 "$CF_FIX/bin/ct" "$CF_FIX/bin/runcdist"
+   cat > "$CF_FIX/bin/ssh" <<'FAKE'
+#!/bin/bash
+echo "ssh $*" >> "$CF_FIX/calls"
+test "${FAKE_SSH_OK:-1}" = "1" && exit 0
+echo "ssh: connect to host port 22: Connection timed out" >&2
+exit 255
+FAKE
+   chmod 755 "$CF_FIX/bin/ssh"
    export PATH="$CF_FIX/bin:$PATH"
    export FAKE_MODE=idempotent
+   export CDIST_FRESHTEST_WAIT_TRIES=1 CDIST_FRESHTEST_WAIT_SLEEP=0
    : > "$CF_FIX/calls"
 }
 
@@ -118,8 +127,10 @@ calls() {
    [[ "$output" == *"runcdist -d -v fresh.example.net"* ]]
 }
 
-@test "a failed deploy cleans up and is reported" {
+@test "a deploy failure on an unreachable host is reported and cleaned up" {
    export FAKE_CT_FAIL=deploy
+   export FAKE_SSH_OK=0
+   export CDIST_FRESHTEST_RETRIES=0
    run_freshtest
    [ "$CF_STATUS" -eq 1 ]
    [[ "$CF_OUT" == *"DEPLOY-FAILED"* ]]
@@ -165,6 +176,29 @@ calls() {
    [ "$CF_STATUS" -eq 0 ]
    [[ "$CF_OUT" == *"cdist-freshtest fresh: IDEMPOTENT"* ]]
    [[ "$CF_OUT" != *"=== deploy"* ]]
+}
+
+@test "a deploy that fails while the host is reachable is continued" {
+   export FAKE_CT_FAIL=deploy
+   run_freshtest
+   [ "$CF_STATUS" -eq 0 ]
+   [[ "$CF_OUT" == *"answers over ssh"* ]]
+   [[ "$CF_OUT" == *"IDEMPOTENT, after configuring it here"* ]]
+   run calls
+   [[ "$output" == *"runcdist -v fresh.lnw.verboom.net"* ]]
+   [[ "$output" == *"ct destroy fresh"* ]]
+}
+
+@test "a deploy that leaves the host unreachable is retried once" {
+   export FAKE_CT_FAIL=deploy
+   export FAKE_SSH_OK=0
+   run_freshtest
+   [ "$CF_STATUS" -eq 1 ]
+   [[ "$CF_OUT" == *"DEPLOY-FAILED"* ]]
+   run calls
+   [[ "$output" == *"ct deploy fresh"* ]]
+   [[ "$output" == *"ct destroy fresh"* ]]
+   [ "$(grep -c "ct deploy fresh" "$CF_FIX/calls")" -eq 2 ]
 }
 
 @test "the log contains every step" {

@@ -19,12 +19,17 @@ WORK="${CDIST_FRESHTEST_WORK:-/tmp/cdist-freshtest}"
 DOMAIN="${CDIST_FRESHTEST_DOMAIN:-lnw.verboom.net}"
 CT="${CDIST_FRESHTEST_CT:-ct}"
 RUN="${CDIST_FRESHTEST_RUN:-runcdist}"
+SSH="${CDIST_FRESHTEST_SSH:-ssh}"
 
 NAME=""
 FQDN=""
 LOG=""
 TIMEOUT=1800
 KEEP=0
+WAIT_TRIES="${CDIST_FRESHTEST_WAIT_TRIES:-24}"
+WAIT_SLEEP="${CDIST_FRESHTEST_WAIT_SLEEP:-5}"
+RETRIES="${CDIST_FRESHTEST_RETRIES:-1}"
+PARTIAL=0
 QUIET=0
 DEPLOYED=0
 
@@ -44,6 +49,7 @@ usage() {
 	 -s, --second-run    run the real configuration a second time and probe
 	                     again, to see whether a run converges by itself
 	 -t, --timeout N     seconds per step (default 1800)
+ -r, --retries N     deploy retries when the host stays unreachable (1)
 	 -q, --quiet         only print the summary
 	 -V, --version       show the version and exit
 	 -h, --help          show this help and exit
@@ -53,6 +59,10 @@ usage() {
 	 CDIST_FRESHTEST_CT      ct helper ($CT)
 	 CDIST_FRESHTEST_RUN     runcdist helper ($RUN)
 	 CDIST_FRESHTEST_WORK    scratch directory ($WORK)
+	 CDIST_FRESHTEST_SSH     ssh client used to wait for the host (ssh)
+	 CDIST_FRESHTEST_WAIT_TRIES  ssh attempts, WAIT_SLEEP apart (24)
+	 CDIST_FRESHTEST_WAIT_SLEEP  seconds between ssh attempts (5)
+	 CDIST_FRESHTEST_RETRIES deploy retries (1)
 	EOF
 }
 
@@ -117,6 +127,22 @@ probe() {
    test "$objects" -eq 0
 }
 
+# Wait until the newly created host answers over ssh. ct deploy runs cdist
+# immediately after creating the container, which fails when the name does not
+# resolve or sshd is not up yet; the container itself is fine at that point.
+wait_ssh() {
+   local tries=0 output
+   while test "$tries" -lt "$WAIT_TRIES"; do
+      output=$("$SSH" -o BatchMode=yes -o ConnectTimeout=5 \
+         -o StrictHostKeyChecking=accept-new "$FQDN" true 2>&1) && return 0
+      tries=$(( tries + 1 ))
+      log "waiting for $FQDN to answer over ssh ($tries/$WAIT_TRIES)"
+      test "$WAIT_SLEEP" -gt 0 && sleep "$WAIT_SLEEP"
+   done
+   printf '%s\n' "$output" >> "$LOG"
+   return 1
+}
+
 destroy() {
    local why="$1"
    log "destroying $NAME ($why)"
@@ -160,6 +186,8 @@ normalise_options() {
       --quiet) args+=("-q") ;;
       --version) args+=("-V") ;;
       --help) args+=("-h") ;;
+      --retries) args+=("-r" "$1"); shift ;;
+      --retries=*) args+=("-r" "${arg#--retries=}") ;;
       --timeout) args+=("-t" "$1"); shift ;;
       --timeout=*) args+=("-t" "${arg#--timeout=}") ;;
       *) args+=("$arg") ;;
@@ -176,13 +204,14 @@ main() {
    mapfile -t normalised < <(normalise_options "$@")
    set -- "${normalised[@]+"${normalised[@]}"}"
 
-   while getopts ":kpsqt:Vh" option; do
+   while getopts ":kpsqr:t:Vh" option; do
       case "$option" in
       k) KEEP=1 ;;
       p) probe_only=1 ;;
       s) second_run=1 ;;
       q) QUIET=1 ;;
       t) TIMEOUT="$OPTARG" ;;
+      r) RETRIES="$OPTARG" ;;
       V) printf '%s %s\n' "${0##*/}" "$VERSION"; return 0 ;;
       h) usage; return 0 ;;
       \?) printf 'Unknown option: -%s\n' "$OPTARG" >&2; usage; return 1 ;;
@@ -205,11 +234,36 @@ main() {
       # From here on a cleanup is attempted: a failing ct deploy may well have
       # created the container before it gave up.
       DEPLOYED=1
-      if run_step deploy "$CT" deploy "$NAME"; then
-         :
-      else
-         summary DEPLOY-FAILED
-         return 1
+      if ! run_step deploy "$CT" deploy "$NAME"; then
+         if wait_ssh; then
+            # The container exists and is reachable, so only the configuration
+            # step of ct deploy failed. Do that ourselves.
+            PARTIAL=1
+            log "ct deploy failed, but $FQDN answers over ssh: configuring it here"
+         elif test "$RETRIES" -gt 0; then
+            RETRIES=$(( RETRIES - 1 ))
+            log "retrying: $FQDN never became reachable"
+            destroy "retry"
+            DEPLOYED=0
+            if run_step redeploy "$CT" deploy "$NAME"; then
+               DEPLOYED=1
+            elif wait_ssh; then
+               DEPLOYED=1
+               PARTIAL=1
+            else
+               summary DEPLOY-FAILED
+               return 1
+            fi
+         else
+            summary DEPLOY-FAILED
+            return 1
+         fi
+      fi
+      if test "$PARTIAL" -eq 1; then
+         if ! run_step "configure initial" "$RUN" -v "$FQDN"; then
+            summary "CONFIGURE-FAILED"
+            return 1
+         fi
       fi
    fi
 
@@ -236,6 +290,7 @@ main() {
       fi
    fi
 
+   test "$PARTIAL" -eq 1 && verdict="$verdict, after configuring it here"
    summary "$verdict"
    return "$status"
 }
