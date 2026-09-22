@@ -44,6 +44,12 @@ Static audit of a cdist configuration: reports types, source files, explorer
 variables, parameters and manifests that do not hold up, without contacting a
 single host. See `CDIST-AUDIT.md` for the full description.
 
+### cdist-render
+
+Render the cdist object tree of a host offline (recorded explorer output, no
+host contacted, no code executed) and diff two renders to see what a change
+would touch. See `CDIST-RENDER.md`.
+
 ### initial-manifest
 
 An example initial manifest I use and integrates part of the other scripts.
