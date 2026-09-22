@@ -1,0 +1,8 @@
+#!/bin/sh
+# __ssh_authorized_keys needs the path of the authorized_keys file of its
+# owner, which it normally asks the target for.
+owner=$(cat "$__object/parameter/owner" 2>/dev/null || echo "$__object_id")
+case "$owner" in
+root) echo /root/.ssh/authorized_keys ;;
+*) echo "/home/$owner/.ssh/authorized_keys" ;;
+esac

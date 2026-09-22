@@ -1,0 +1,3 @@
+#!/bin/sh
+# ... and the group that owns it.
+echo users

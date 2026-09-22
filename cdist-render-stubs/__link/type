@@ -1,0 +1,4 @@
+#!/bin/sh
+# Offline there is no target: report that nothing exists yet so the type
+# takes its create path instead of bailing out on an unknown state.
+echo none
