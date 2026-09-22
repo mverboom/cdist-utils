@@ -54,6 +54,8 @@ DISABLED = re.compile(r"^\s*(return|exit)\s+0\s*$")
 # include_cfg pulls in a file per line: "@key" recurses, "!name" references a
 # file that must be found in one of the searched directories.
 CFG_REFERENCE = re.compile(r"^!([^\s]+)\s*$")
+VARIABLE_REFERENCE = re.compile(r"\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?")
+ASSIGNMENT_LINE = re.compile(r"^\s*([A-Za-z_][A-Za-z0-9_]*)=(.*)$")
 MAX_CFG_FILE_SIZE = 256 * 1024
 
 
@@ -478,6 +480,58 @@ def check_includes(audit: Audit, path: Path, text: str) -> None:
                               f"include_cfg repo {argument} is not a directory")
 
 
+def collect_variables(audit: Audit) -> dict[str, str]:
+    """Return the simple NAME=value assignments found in the configuration.
+
+    Manifests usually build the include_cfg repository path in a variable
+    (cfgdir="$sshconfigbase/configs"), so the path has to be resolved to know
+    which directory to look at.
+    """
+    variables: dict[str, str] = {}
+    for path in audit.shell_files():
+        for _, statement in logical_lines(path.read_text(errors="replace")):
+            for line in statement.splitlines():
+                match = ASSIGNMENT_LINE.match(line)
+                if match:
+                    value = match.group(2).strip().strip("\"'")
+                    variables.setdefault(match.group(1), value)
+    return variables
+
+
+def resolve_variables(value: str, variables: dict[str, str],
+                      depth: int = 6) -> str:
+    """Substitute variables in a value, as far as it can be resolved."""
+    for _ in range(depth):
+        resolved = VARIABLE_REFERENCE.sub(
+            lambda match: variables.get(match.group(1), match.group(0)), value)
+        if resolved == value:
+            break
+        value = resolved
+    return value
+
+
+def resolve_repo(audit: Audit, argument: str, variables: dict[str, str]) -> \
+        Path | None:
+    """Turn an include_cfg repository argument into a directory.
+
+    The argument is either a literal $files/... path or a variable that has to
+    be resolved first (cfgdir="$sshconfigbase/configs", ...).
+    """
+    for _ in range(6):
+        if argument.startswith(("$files/", "${files}/")):
+            return expand_files(audit, argument)
+        if "$" not in argument:
+            break
+        resolved = resolve_variables(argument, variables)
+        if resolved == argument:
+            break
+        argument = resolved
+    path = Path(argument)
+    if str(path).startswith(str(audit.files_dirs[0])):
+        return path
+    return None
+
+
 def cfg_repo_dirs(audit: Audit) -> set[Path]:
     """Return the directories that include_cfg reads its keys from.
 
@@ -486,13 +540,14 @@ def cfg_repo_dirs(audit: Audit) -> set[Path]:
     that directory can contain references.
     """
     found: set[Path] = set()
+    variables = collect_variables(audit)
     for path in audit.shell_files():
         for _, statement in logical_lines(path.read_text(errors="replace")):
             tokens = tokenize(statement)
             for index, token in enumerate(tokens):
                 if token != "include_cfg" or index + 1 >= len(tokens):
                     continue
-                resolved = expand_files(audit, tokens[index + 1])
+                resolved = resolve_repo(audit, tokens[index + 1], variables)
                 if resolved and resolved.is_dir():
                     found.add(resolved)
     return found
