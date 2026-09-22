@@ -50,6 +50,11 @@ Render the cdist object tree of a host offline (recorded explorer output, no
 host contacted, no code executed) and diff two renders to see what a change
 would touch. See `CDIST-RENDER.md`.
 
+### cdist-freshtest
+
+Deploy a throwaway container, configure it with cdist and prove that a second
+run changes nothing (idempotency). See `CDIST-FRESHTEST.md`.
+
 ### initial-manifest
 
 An example initial manifest I use and integrates part of the other scripts.

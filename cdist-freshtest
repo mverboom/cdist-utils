@@ -1,0 +1,232 @@
+#!/usr/bin/env bash
+#
+# cdist-freshtest
+#
+# Prove that cdist configures a brand new host and that a second run changes
+# nothing.
+#
+# Deploys a throwaway container with the ct helper, runs the full configuration
+# on it once, then asks cdist (with a dry run) which objects would still
+# change. On a converged host that list is empty. The container is destroyed
+# afterwards unless --keep is given.
+#
+# See CDIST-FRESHTEST.md.
+
+set -u
+
+VERSION="0.1.0"
+WORK="${CDIST_FRESHTEST_WORK:-/tmp/cdist-freshtest}"
+DOMAIN="${CDIST_FRESHTEST_DOMAIN:-lnw.verboom.net}"
+CT="${CDIST_FRESHTEST_CT:-ct}"
+RUN="${CDIST_FRESHTEST_RUN:-runcdist}"
+
+NAME=""
+FQDN=""
+LOG=""
+TIMEOUT=1800
+KEEP=0
+QUIET=0
+DEPLOYED=0
+
+usage() {
+   cat <<-EOF
+	cdist-freshtest [OPTION]... NAME
+
+	Deploy a fresh container as NAME, configure it with cdist, verify with a
+	dry run that nothing would change any more, and destroy it again.
+
+	NAME is the short hostname; the fqdn is NAME.$DOMAIN, exactly like the
+	ct helper builds it.
+
+	Options:
+	 -k, --keep          keep the container and its logs for inspection
+	 -p, --probe-only    do not deploy or destroy, only probe an existing host
+	 -s, --second-run    run the real configuration a second time and probe
+	                     again, to see whether a run converges by itself
+	 -t, --timeout N     seconds per step (default 1800)
+	 -q, --quiet         only print the summary
+	 -V, --version       show the version and exit
+	 -h, --help          show this help and exit
+
+	Environment:
+	 CDIST_FRESHTEST_DOMAIN  domain appended to NAME ($DOMAIN)
+	 CDIST_FRESHTEST_CT      ct helper ($CT)
+	 CDIST_FRESHTEST_RUN     runcdist helper ($RUN)
+	 CDIST_FRESHTEST_WORK    scratch directory ($WORK)
+	EOF
+}
+
+log() {
+   test "$QUIET" -eq 1 && return 0
+   printf '%s %s\n' "$(date '+%H:%M:%S')" "$*" >&2
+}
+
+# Print a step header to the log file and, unless quiet, to the terminal.
+step() {
+   printf '\n=== %s\n' "$*" >> "$LOG"
+   test "$QUIET" -eq 1 || printf '\n=== %s\n' "$*" >&2
+}
+
+# Run a step with a time limit, log its output and report its exit status.
+run_step() {
+   local name="$1" started status
+   shift
+   step "$name: $*"
+   started=$(date +%s)
+   if timeout --kill-after=30 "$TIMEOUT" "$@" >> "$LOG" 2>&1; then
+      status=0
+   else
+      status=$?
+   fi
+   log "$name -> exit $status in $(( $(date +%s) - started ))s"
+   return "$status"
+}
+
+# Return the byte offset of the log, so a step can be inspected on its own.
+log_offset() {
+   wc -c < "$LOG"
+}
+
+# Return the objects a cdist dry run would still process (i.e. change).
+changed_objects() {
+   sed -n "s/^INFO: $FQDN: Processing \\(.*\\)\$/\\1/p" "$1" | sort -u
+}
+
+# Return "<count> <type>" for the objects that are not idempotent.
+changed_types() {
+   changed_objects "$1" | sed 's|/.*||' | sort | uniq -c | sort -rn
+}
+
+# Ask cdist which objects it would still change. Returns 0 when it is none.
+probe() {
+   local phase="$1" offset file objects errors rc=0
+   offset=$(log_offset)
+   run_step "probe $phase" "$RUN" -d -v "$FQDN" || rc=$?
+   file="$WORK/$NAME.$phase.log"
+   tail -c "+$((offset + 1))" "$LOG" > "$file"
+   objects=$(changed_objects "$file" | wc -l)
+   errors=$(sed -n 's/^ERROR: \(.*\)$/\1/p' "$file" | sort -u | wc -l)
+   log "probe $phase: $objects object(s) would still change, $errors error(s)"
+   if test "$errors" -gt 0; then
+      sed -n 's/^ERROR: \(.*\)$/\1/p' "$file" | sort -u | head -5 >&2
+   fi
+   if test "$rc" -ne 0; then
+      log "probe $phase: cdist exited $rc"
+      return 1
+   fi
+   test "$objects" -eq 0
+}
+
+destroy() {
+   local why="$1"
+   log "destroying $NAME ($why)"
+   run_step destroy "$CT" destroy "$NAME" || log "destroy failed, check the ct log"
+}
+
+cleanup() {
+   test "$DEPLOYED" -eq 1 || return 0
+   test "$KEEP" -eq 1 && { log "keeping $NAME (--keep)"; return 0; }
+   destroy "end of test"
+}
+
+summary() {
+   local verdict="$1"
+   printf 'cdist-freshtest %s: %s (%s)\n' "$NAME" "$verdict" "$FQDN" >&2
+   printf 'log: %s\n' "$LOG" >&2
+}
+
+# Translate the documented long options into the short ones getopts handles.
+normalise_options() {
+   local arg
+   local -a args=()
+   while test "$#" -gt 0; do
+      arg="$1"
+      shift
+      case "$arg" in
+      --keep) args+=("-k") ;;
+      --probe-only) args+=("-p") ;;
+      --second-run) args+=("-s") ;;
+      --quiet) args+=("-q") ;;
+      --version) args+=("-V") ;;
+      --help) args+=("-h") ;;
+      --timeout) args+=("-t" "$1"); shift ;;
+      --timeout=*) args+=("-t" "${arg#--timeout=}") ;;
+      *) args+=("$arg") ;;
+      esac
+   done
+   set -- "${args[@]}"
+   test "$#" -gt 0 && printf '%s\n' "$@"
+}
+
+main() {
+   local probe_only=0 second_run=0 option verdict status=1
+   local name
+
+   mapfile -t normalised < <(normalise_options "$@")
+   set -- "${normalised[@]+"${normalised[@]}"}"
+
+   while getopts ":kpsqt:Vh" option; do
+      case "$option" in
+      k) KEEP=1 ;;
+      p) probe_only=1 ;;
+      s) second_run=1 ;;
+      q) QUIET=1 ;;
+      t) TIMEOUT="$OPTARG" ;;
+      V) printf '%s %s\n' "${0##*/}" "$VERSION"; return 0 ;;
+      h) usage; return 0 ;;
+      \?) printf 'Unknown option: -%s\n' "$OPTARG" >&2; usage; return 1 ;;
+      :) printf 'Option -%s requires an argument\n' "$OPTARG" >&2; usage; return 1 ;;
+      esac
+   done
+   shift $((OPTIND - 1))
+   test "$#" -ne 1 && { usage; return 1; }
+
+   name="$1"
+   NAME="${name%%.*}"
+   FQDN="$NAME.$DOMAIN"
+   mkdir -p "$WORK"
+   LOG="$WORK/$NAME.log"
+   : > "$LOG"
+   trap cleanup EXIT
+
+   if test "$probe_only" -eq 0; then
+      command -v "$CT" > /dev/null || { log "$CT not found"; return 1; }
+      # From here on a cleanup is attempted: a failing ct deploy may well have
+      # created the container before it gave up.
+      DEPLOYED=1
+      if run_step deploy "$CT" deploy "$NAME"; then
+         :
+      else
+         summary DEPLOY-FAILED
+         return 1
+      fi
+   fi
+
+   # The dry run after the first configuration is the actual test: whatever it
+   # would still process is not idempotent.
+   if probe idempotent; then
+      verdict=IDEMPOTENT
+      status=0
+   else
+      verdict="NOT-IDEMPOTENT"
+      changed_types "$WORK/$NAME.idempotent.log" | head -10 >&2
+   fi
+
+   if test "$second_run" -eq 1; then
+      if run_step "configure second-run" "$RUN" -v "$FQDN"; then
+         if probe after-second-run; then
+            verdict="$verdict, converged after a second run"
+            status=0
+         else
+            verdict="$verdict, still not converged after a second run"
+         fi
+      else
+         verdict="$verdict, second run FAILED"
+      fi
+   fi
+
+   summary "$verdict"
+   return "$status"
+}
+
+main "$@"
