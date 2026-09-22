@@ -216,6 +216,9 @@ def prepare_work(context: dict[str, object]) -> None:
     context["stubs"].mkdir(parents=True, exist_ok=True)
     home = context["home"]
     (home / ".cdist").mkdir(parents=True, exist_ok=True)
+    # Types like __cdist-poll write the cdist user's own ~/.ssh/authorized_keys
+    # while their manifest runs; that has to land in the sandbox as well.
+    (home / ".ssh").mkdir(mode=0o700, parents=True, exist_ok=True)
     # cdist caches per host under $HOME/.cdist/cache: keep that in the work
     # directory, but let the run see the inventory and the full-run exclusions.
     if context["inventory"]:

@@ -205,6 +205,11 @@ PY
    [[ "$output" != *"$CR_FIX/explore"* ]]
 }
 
+@test "the sandbox home has a .ssh directory" {
+   run_render host.example.com >/dev/null
+   [ -d "$CR_FIX/work/home/.ssh" ]
+}
+
 @test "a successful render cleans up its work directory" {
    run_render host.example.com >/dev/null
    [ ! -d "$CR_FIX/work/host.example.com" ]
