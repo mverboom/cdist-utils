@@ -1,4 +1,11 @@
 #!/bin/sh
-# Offline there is no target: report that nothing exists yet so the type
-# takes its create path instead of bailing out on an unknown state.
-echo none
+# Offline there is no target, so report the state the object expects: with
+# --state pre-exists the file or directory has to be there already (cdist
+# only checks it), for everything else assume nothing exists yet so the type
+# takes its create path.
+state=$(cat "$__object/parameter/state" 2>/dev/null)
+if test "$state" = "pre-exists"; then
+   echo file
+else
+   echo none
+fi
