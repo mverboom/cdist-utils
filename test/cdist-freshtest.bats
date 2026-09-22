@@ -228,6 +228,22 @@ calls() {
    [ -f "$CF_FIX/inventory/other.lnw.verboom.net" ]
 }
 
+@test "the known_hosts entry of the test host is removed again" {
+   cat > "$CF_FIX/bin/ssh-keygen" <<'FAKE'
+#!/bin/bash
+case "$1" in
+-F) exit "${FAKE_KEYGEN_FOUND:-1}" ;;
+-R) echo "removed $2" ;;
+esac
+exit 0
+FAKE
+   chmod 755 "$CF_FIX/bin/ssh-keygen"
+   export FAKE_KEYGEN_FOUND=0
+   run_freshtest
+   [ "$CF_STATUS" -eq 0 ]
+   [[ "$CF_OUT" == *"removed the known_hosts entry"* ]]
+}
+
 @test "without a name it prints usage" {
    run "$CF_TEST"
    [ "$status" -eq 1 ]

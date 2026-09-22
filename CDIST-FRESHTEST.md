@@ -86,7 +86,10 @@ Everything `ct deploy` does, and `ct destroy` undoes:
   cdist-freshtest additionally removes the **inventory entry** that the runcdist
   postrun step generated for the test host (kept in the work directory), because
   `ct destroy` leaves it behind and a host that does not exist any more should
-  not stay in the inventory.
+  not stay in the inventory;
+* cdist's ssh accepts new host keys, so the test host ends up in the cdist
+  user's `known_hosts`; that entry is removed again as well, otherwise reusing
+  the same test name fails with a changed host key.
 
 A test therefore needs the same access as a normal `ct deploy` and should not
 be run in parallel with itself under the same name.
