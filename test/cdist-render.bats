@@ -212,6 +212,24 @@ PY
    [ -d "$CR_FIX/work/other.example.com" ]
 }
 
+@test "the snapshot index records where the render came from" {
+   run_render host.example.com >/dev/null
+   run jq -r '.config_dirs[0].path' "$CR_FIX/snap/index.json"
+   [ "$output" = "$CR_FIX/config" ]
+   run jq -r '.rendered' "$CR_FIX/snap/index.json"
+   [[ "$output" =~ ^20[0-9][0-9]- ]]
+}
+
+@test "rendering in parallel gives the same snapshots" {
+   run_render -j 4 host.example.com other.example.com >/dev/null
+   cp -a "$CR_FIX/snap" "$CR_FIX/parallel"
+   rm -rf "$CR_FIX/snap"
+   run_render host.example.com other.example.com >/dev/null
+   run diff <(jq -S . "$CR_FIX/parallel/host.example.com.json") \
+      <(jq -S . "$CR_FIX/snap/host.example.com.json")
+   [ "$status" -eq 0 ]
+}
+
 @test "the bundled stub directory is the default" {
    run bash -c "cd '$CR_ROOT' && ./cdist-render render --help"
    [ "$status" -eq 0 ]

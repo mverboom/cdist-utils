@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import argparse
+import concurrent.futures
 import json
 import os
 import re
@@ -108,6 +109,8 @@ def build_parser() -> argparse.ArgumentParser:
     render.add_argument("--keep-work", action="store_true",
                         help="keep the per host work directory (cache, logs) "
                              "after a successful render")
+    render.add_argument("-j", "--jobs", type=int, default=1, metavar="N",
+                        help="render up to N hosts in parallel")
     common(render)
 
     diff = sub.add_parser("diff", help="compare two snapshot directories")
@@ -415,18 +418,52 @@ def command_render(context: dict[str, object], args: argparse.Namespace) -> int:
             return 1
         hosts = sorted(entry.name for entry in explore.iterdir()
                        if entry.is_dir() and entry.name != ".git")
+    snapshots: list[dict[str, object]] = []
+    if args.jobs > 1 and len(hosts) > 1:
+        with concurrent.futures.ThreadPoolExecutor(args.jobs) as pool:
+            snapshots = list(pool.map(
+                lambda host: render_host(context, host, args.keep_work),
+                hosts))
+    else:
+        snapshots = [render_host(context, host, args.keep_work)
+                     for host in hosts]
     failures = 0
-    for host in hosts:
-        snapshot = render_host(context, host, args.keep_work)
-        state = "ok" if snapshot["ok"] else "FAILED"
+    for snapshot in snapshots:
         if not snapshot["ok"]:
             failures += 1
-        print(f"{host}: {state}, {len(snapshot['objects'])} objects, "
-              f"{snapshot['seconds']}s"
+        print(f"{snapshot['host']}: "
+              f"{'ok' if snapshot['ok'] else 'FAILED'}, "
+              f"{len(snapshot['objects'])} objects, {snapshot['seconds']}s"
               + (f" - {snapshot['error']}" if snapshot["error"] else ""))
+    write_index(context)
     print(f"cdist-render: rendered {len(hosts)} hosts into "
           f"{context['snapshot']}, {failures} failed")
     return 1 if failures else 0
+
+
+def config_revision(path: Path) -> str:
+    """Return the git revision of a configuration directory."""
+    try:
+        result = subprocess.run(["git", "-C", str(path), "rev-parse",
+                                 "--short", "HEAD"], capture_output=True,
+                                text=True, stdin=subprocess.DEVNULL)
+    except OSError:
+        return ""
+    return result.stdout.strip() if result.returncode == 0 else ""
+
+
+def write_index(context: dict[str, object]) -> None:
+    """Write the snapshot index: when and from what it was rendered."""
+    index = {
+        "rendered": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        "config_dirs": [{"path": str(path),
+                         "revision": config_revision(path)}
+                        for path in context["config_dirs"]],
+        "upstream": str(context["upstream"] or ""),
+        "explore": str(context["explore"] or ""),
+    }
+    (context["snapshot"] / "index.json").write_text(
+        json.dumps(index, indent=1, sort_keys=True) + "\n")
 
 
 def load_snapshots(directory: Path) -> dict[str, dict[str, object]]:
