@@ -176,6 +176,24 @@ calls() {
    [[ "$output" == *"=== destroy"* ]]
 }
 
+@test "the inventory entry of the test host is removed again" {
+   mkdir -p "$CF_FIX/inventory"
+   printf 'lnw\nlxc\n' > "$CF_FIX/inventory/fresh.lnw.verboom.net"
+   export CDIST_INVENTORY="$CF_FIX/inventory"
+   run_freshtest
+   [ "$CF_STATUS" -eq 0 ]
+   [ ! -f "$CF_FIX/inventory/fresh.lnw.verboom.net" ]
+   [ -f "$CF_FIX/work/fresh.inventory" ]
+}
+
+@test "an existing inventory entry of another host is left alone" {
+   mkdir -p "$CF_FIX/inventory"
+   printf 'lnw\n' > "$CF_FIX/inventory/other.lnw.verboom.net"
+   export CDIST_INVENTORY="$CF_FIX/inventory"
+   run_freshtest
+   [ -f "$CF_FIX/inventory/other.lnw.verboom.net" ]
+}
+
 @test "without a name it prints usage" {
    run "$CF_TEST"
    [ "$status" -eq 1 ]

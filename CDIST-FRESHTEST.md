@@ -68,7 +68,11 @@ Everything `ct deploy` does, and `ct destroy` undoes:
 * explorer data and inventory tags for the new host (through the normal
   `runcdist` postrun steps);
 * on destroy: the container is stopped and removed, the address is released and
-  the explorer data is moved to `explore.decomissioned`.
+  the explorer data is moved to `explore.decomissioned` by `ct destroy`;
+  cdist-freshtest additionally removes the **inventory entry** that the runcdist
+  postrun step generated for the test host (kept in the work directory), because
+  `ct destroy` leaves it behind and a host that does not exist any more should
+  not stay in the inventory.
 
 A test therefore needs the same access as a normal `ct deploy` and should not
 be run in parallel with itself under the same name.
