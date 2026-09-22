@@ -81,6 +81,10 @@ EOF
    printf '#!/bin/sh\necho unused\n' > "$cfg/type/__unused_type/manifest"
    printf '#!/bin/sh\necho local\n' > "$cfg/explorer/local_explorer"
    printf 'content\n' > "$cfg/files/dir/file"
+   mkdir -p "$cfg/files/sshconfig/generic" "$cfg/files/sshconfig/configs"
+   printf '!present.conf\n' > "$cfg/files/sshconfig/generic/cdist"
+   printf '!missing.conf\n' > "$cfg/files/sshconfig/generic/mark"
+   printf 'x\n' > "$cfg/files/sshconfig/configs/present.conf"
    ln -s /nonexistent/target "$cfg/type/__broken_type"
 
    mkdir -p "$CA_FIX/inventory" "$CA_FIX/explore/old.example.com"
@@ -213,6 +217,13 @@ assert_path() {
 @test "reports the same path managed from two manifests" {
    assert_check path-conflict
    assert_message path-conflict '/etc/example'
+}
+
+@test "reports a !reference to a file that is gone" {
+   assert_check include-cfg-file-missing
+   assert_message include-cfg-file-missing '!missing.conf'
+   run messages_of include-cfg-file-missing
+   [[ "$output" != *"present.conf"* ]]
 }
 
 @test "reports a syntax error" {

@@ -91,6 +91,14 @@ one of its subdirectories.
 `include-cfg-repo-missing`
 The repository directory passed to `include_cfg` does not exist.
 
+`include-cfg-file-missing`
+A `!name` reference inside an `include_cfg` source points at a file that is not
+found anywhere under that repository. This matters more than it looks:
+`include_cfg` stops at the first missing reference, so everything after it in
+the same file - other references included - is silently dropped (the call sites
+swallow the error with `|| true`). One deleted file can therefore stop a whole
+block of configuration from ever being applied.
+
 `param-unknown`
 A `--parameter` is passed that the type does not declare. Quoted values and
 command substitutions are parsed properly, so flags inside a string do not

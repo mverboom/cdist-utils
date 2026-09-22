@@ -51,6 +51,10 @@ LEFTOVER_SUFFIXES = ("~", ".swp", ".swo", ".orig", ".bak", ".old", ".rej",
                      ".save", ".dpkg-old", ".dpkg-new", ".dpkg-dist")
 HEREDOC = re.compile(r"<<-?\s*(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\1")
 DISABLED = re.compile(r"^\s*(return|exit)\s+0\s*$")
+# include_cfg pulls in a file per line: "@key" recurses, "!name" references a
+# file that must be found in one of the searched directories.
+CFG_REFERENCE = re.compile(r"^!([^\s]+)\s*$")
+MAX_CFG_FILE_SIZE = 256 * 1024
 
 
 @dataclass
@@ -474,6 +478,53 @@ def check_includes(audit: Audit, path: Path, text: str) -> None:
                               f"include_cfg repo {argument} is not a directory")
 
 
+def check_cfg_references(audit: Audit) -> None:
+    """Report files referenced with ! from an include_cfg source that are gone.
+
+    include_cfg stops at the first missing reference, so everything after it in
+    that file - other references included - is silently dropped. That is how a
+    single deleted file can stop a whole block of configuration from ever being
+    applied.
+    """
+    cache: dict[Path, set[str]] = {}
+    for files_dir in audit.files_dirs:
+        if not files_dir.is_dir():
+            continue
+        for root, dirs, names in os.walk(files_dir):
+            dirs[:] = [name for name in dirs if name != ".git"]
+            for name in names:
+                path = Path(root) / name
+                if path.is_symlink() and not path.exists():
+                    continue
+                try:
+                    if path.stat().st_size > MAX_CFG_FILE_SIZE:
+                        continue
+                    content = path.read_text(errors="replace")
+                except OSError:
+                    continue
+                if "\0" in content:
+                    continue
+                for line in content.splitlines():
+                    match = CFG_REFERENCE.match(line.strip())
+                    if not match:
+                        continue
+                    target = match.group(1)
+                    if "$" in target:
+                        continue
+                    repo = path.relative_to(files_dir).parts[0]
+                    if repo not in cache:
+                        names_found: set[str] = set()
+                        for _, _, walked_files in os.walk(files_dir / repo):
+                            names_found.update(walked_files)
+                        cache[repo] = names_found
+                    if target not in cache[repo]:
+                        audit.add("include-cfg-file-missing", "error", path,
+                                  None,
+                                  f"!{target} is not found anywhere under "
+                                  f"files/{repo}, and include_cfg stops at the "
+                                  "first missing reference")
+
+
 def check_parameters(audit: Audit, invocations: list[Invocation]) -> None:
     """Report unknown parameters and required parameters nobody passes."""
     seen: dict[str, set[str]] = defaultdict(set)
@@ -709,7 +760,8 @@ def run_checks(audit: Audit, args: argparse.Namespace) -> None:
                                  "path-conflict")
     needs_variables = selected("explorer-undefined", "tag-undefined")
     needs_sources = selected("source-missing")
-    needs_includes = selected("include-missing", "include-cfg-repo-missing")
+    needs_includes = selected("include-missing", "include-cfg-repo-missing",
+                              "include-cfg-file-missing")
 
     invocations: list[Invocation] = []
     for path in audit.shell_files():
@@ -727,6 +779,8 @@ def run_checks(audit: Audit, args: argparse.Namespace) -> None:
         check_types(audit, invocations)
     if selected("param-"):
         check_parameters(audit, invocations)
+    if selected("include-cfg-file-missing"):
+        check_cfg_references(audit)
     if selected("path-conflict"):
         check_path_conflicts(audit, invocations)
     if selected("syntax", "shellcheck"):
