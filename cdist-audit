@@ -46,6 +46,11 @@ PARAMETER_KINDS = ("required", "optional", "boolean", "required_multiple",
 PATH_TYPES = frozenset({"__file", "__config_file", "__directory", "__link",
                         "__block", "__line", "__key_value", "__dot_file"})
 SEVERITY_ORDER = {"error": 0, "warning": 1, "info": 2}
+# editor, version control and packaging leftovers that must not be audited
+LEFTOVER_SUFFIXES = ("~", ".swp", ".swo", ".orig", ".bak", ".old", ".rej",
+                     ".save", ".dpkg-old", ".dpkg-new", ".dpkg-dist")
+HEREDOC = re.compile(r"<<-?\s*(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\1")
+DISABLED = re.compile(r"^\s*(return|exit)\s+0\s*$")
 
 
 @dataclass
@@ -132,24 +137,31 @@ class Audit:
                     continue
                 self.tags.update(
                     tag.strip() for tag in
-                    entry.read_text(errors="replace").split(",") if tag.strip()
+                    re.split(r"[,\n]", entry.read_text(errors="replace"))
+                    if tag.strip()
                 )
+
+    def config_files(self) -> list[Path]:
+        """Return every file that may take part in a cdist run."""
+        found: list[Path] = []
+        for base in self.config_dirs:
+            manifest = base / "manifest"
+            if manifest.is_dir():
+                found += [path for path in manifest.rglob("*")
+                          if path.is_file() and ".git" not in path.parts]
+            for type_dir in _entries(base / "type"):
+                if not type_dir.is_dir() or ".git" in type_dir.parts:
+                    continue
+                found += [path for path in type_dir.rglob("*")
+                          if path.is_file() and is_shell_candidate(type_dir,
+                                                                   path)]
+        return sorted(set(found))
 
     def shell_files(self) -> list[Path]:
         """Return every shell file that takes part in a cdist run."""
         if self._shell_files is None:
-            found: list[Path] = []
-            for base in self.config_dirs:
-                manifest = base / "manifest"
-                if manifest.is_dir():
-                    found += [path for path in manifest.rglob("*")
-                              if path.is_file() and ".git" not in path.parts]
-                for type_dir in _entries(base / "type"):
-                    if not type_dir.is_dir() or ".git" in type_dir.parts:
-                        continue
-                    found += [path for path in type_dir.rglob("*")
-                              if path.is_file() and is_shell_name(type_dir, path)]
-            self._shell_files = sorted(set(found))
+            self._shell_files = [path for path in self.config_files()
+                                 if not is_leftover(path)]
         return self._shell_files
 
     def declared(self, type_name: str) -> set[str]:
@@ -173,11 +185,18 @@ class Audit:
         return not any((base / relative).exists() for base in self.files_dirs)
 
 
-def is_shell_name(type_dir: Path, path: Path) -> bool:
-    """Return whether a file inside a type directory is a shell script."""
+def is_shell_candidate(type_dir: Path, path: Path) -> bool:
+    """Return whether a file inside a type directory can be a shell script."""
     if path.parent == type_dir / "explorer":
         return True
     return path.name == "manifest" or path.name.startswith(("gencode-", "code-"))
+
+
+def is_leftover(path: Path) -> bool:
+    """Return whether a file is an editor, vcs or packaging leftover."""
+    if path.name.startswith(".#") or ".swp" in path.name:
+        return True
+    return path.name.endswith(LEFTOVER_SUFFIXES)
 
 
 def _entries(directory: Path | None) -> list[Path]:
@@ -221,18 +240,29 @@ def logical_lines(text: str) -> list[tuple[int, str]]:
     """Split shell text into (first line number, statement) pairs.
 
     Backslash continuations are joined so the line number points at the start
-    of the statement.
+    of the statement, and heredoc bodies are dropped: they are data, not shell.
     """
     result: list[tuple[int, str]] = []
     buffer: list[str] = []
+    pending: list[tuple[str, bool]] = []
     start = 0
     for number, raw in enumerate(text.splitlines(), start=1):
+        if pending:
+            delimiter, strip_tabs = pending[0]
+            seen = raw.lstrip("\t") if strip_tabs else raw
+            if seen == delimiter:
+                pending.pop(0)
+            continue
         if not buffer:
             start = number
+        unquoted = re.sub(r"'[^']*'|\"[^\"]*\"", "", raw)
+        for match in HEREDOC.finditer(unquoted):
+            pending.append((match.group(2), match.group(0).startswith("<<-")))
         continued = raw.endswith("\\")
         buffer.append(raw[:-1] if continued else raw)
         if not continued:
-            result.append((start, "\n".join(buffer)))
+            if not pending:
+                result.append((start, "\n".join(buffer)))
             buffer = []
     if buffer:
         result.append((start, "\n".join(buffer)))
@@ -436,8 +466,11 @@ def check_includes(audit: Audit, path: Path, text: str) -> None:
 def check_parameters(audit: Audit, invocations: list[Invocation]) -> None:
     """Report unknown parameters and required parameters nobody passes."""
     seen: dict[str, set[str]] = defaultdict(set)
+    dynamic: set[str] = set()
     for invocation in invocations:
         declared = audit.declared(invocation.type_name)
+        if any("$" in str(value) for value in invocation.params.values()):
+            dynamic.add(invocation.type_name)
         for name in invocation.params:
             if name in ("require", "autorequire"):
                 continue
@@ -448,6 +481,8 @@ def check_parameters(audit: Audit, invocations: list[Invocation]) -> None:
                           f"--{name} is not a parameter of "
                           f"{invocation.type_name}")
     for type_name, names in sorted(seen.items()):
+        if type_name in dynamic:
+            continue  # a call site builds its parameters at runtime
         for name in sorted(audit.required(type_name) - names):
             audit.add("param-required-missing", "warning",
                       audit.types[type_name], None,
@@ -498,11 +533,10 @@ def check_syntax(audit: Audit, shellcheck: bool) -> None:
 
 def check_hygiene(audit: Audit) -> None:
     """Report editor leftovers and broken symlinks."""
-    for path in audit.shell_files():
-        if path.name.endswith("~") or ".swp" in path.name or \
-                path.name.startswith(".#"):
-            audit.add("editor-leftover", "warning", path, None,
-                      f"editor leftover {path.name} inside the configuration")
+    for path in audit.config_files():
+        if is_leftover(path):
+            audit.add("leftover-file", "warning", path, None,
+                      f"leftover file {path.name} inside the configuration")
     for base in audit.config_dirs:
         for sub in ("type", "manifest", "explorer"):
             for entry in _entries(base / sub):
@@ -536,6 +570,17 @@ def check_dead_code(audit: Audit) -> None:
             continue
         audit.add("explorer-unused", "info", path, None,
                   f"explorer {name} is not used by the configuration")
+    for path in audit.shell_files():
+        if "manifest" not in path.parts:
+            continue
+        for raw in path.read_text(errors="replace").splitlines():
+            stripped = raw.strip()
+            if not stripped or stripped.startswith("#"):
+                continue
+            if DISABLED.match(stripped):
+                audit.add("manifest-disabled", "info", path, None,
+                          "manifest returns immediately, it does nothing")
+            break
     included = set(re.findall(r"include(?:_once)?\s+([^\s;\"']+)", text))
     for base in audit.config_dirs:
         manifest = base / "manifest"
@@ -673,9 +718,10 @@ def run_checks(audit: Audit, args: argparse.Namespace) -> None:
         check_path_conflicts(audit, invocations)
     if selected("syntax", "shellcheck"):
         check_syntax(audit, not args.no_shellcheck)
-    if selected("editor-leftover", "symlink-broken"):
+    if selected("leftover-file", "symlink-broken"):
         check_hygiene(audit)
-    if selected("type-unused", "explorer-unused", "manifest-unreferenced"):
+    if selected("type-unused", "explorer-unused", "manifest-unreferenced",
+                "manifest-disabled"):
         check_dead_code(audit)
     if selected("tag-unused", "host-stale", "explore-missing"):
         check_inventory(audit)

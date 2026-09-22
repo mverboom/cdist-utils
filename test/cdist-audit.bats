@@ -84,7 +84,7 @@ EOF
    ln -s /nonexistent/target "$cfg/type/__broken_type"
 
    mkdir -p "$CA_FIX/inventory" "$CA_FIX/explore/old.example.com"
-   printf 'tag1,qemu\n' > "$CA_FIX/inventory/host1.example.com"
+   printf 'tag1\nqemu\n' > "$CA_FIX/inventory/host1.example.com"
    printf 'x\n' > "$CA_FIX/explore/old.example.com/local_explorer"
    touch -d '100 days ago' "$CA_FIX/explore/old.example.com/local_explorer"
 
@@ -220,9 +220,49 @@ assert_path() {
    assert_message syntax 'syntaxerror'
 }
 
-@test "reports an editor leftover" {
-   assert_check editor-leftover
-   assert_path editor-leftover '.good.swp'
+@test "reports a leftover file" {
+   assert_check leftover-file
+   assert_path leftover-file '.good.swp'
+}
+
+@test "does not parse a leftover file" {
+   printf '__onlyinleftover x --nosuchparam y\n' \
+      > "$CA_FIX/config/manifest/autorun/backup.orig"
+   run_audit
+   run messages_of type-missing
+   [[ "$output" != *__onlyinleftover* ]]
+   assert_check leftover-file
+}
+
+@test "does not mistake a heredoc body for shell" {
+   cat >> "$CA_FIX/config/manifest/autorun/good" <<'EOF'
+__file /etc/nginx.conf --state present --source - <<-EOF
+	include sslconfig.conf;
+	__nosuchtype inside_a_heredoc
+	EOF
+EOF
+   run_audit
+   assert_check include-missing
+   run messages_of include-missing
+   [[ "$output" != *sslconfig.conf* ]]
+   run messages_of type-missing
+   [[ "$output" != *inside_a_heredoc* ]]
+}
+
+@test "reports a manifest that does nothing" {
+   printf 'return 0\n__file /etc/never --state present\n' \
+      > "$CA_FIX/config/manifest/autorun/disabled"
+   run_audit
+   assert_check manifest-disabled
+   assert_path manifest-disabled 'autorun/disabled'
+}
+
+@test "reads tags from a one-tag-per-line inventory file" {
+   printf 'echo "$t_tag1"\n' >> "$CA_FIX/config/manifest/autorun/good"
+   run_audit
+   run messages_of tag-undefined
+   [[ "$output" != *'$t_tag1'* ]]
+   [[ "$output" == *'$t_nosuchtag'* ]]
 }
 
 @test "reports a broken symlink" {

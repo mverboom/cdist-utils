@@ -116,9 +116,10 @@ seen, hence a warning and not an error.
 The same path is managed literally from more than one manifest (for example
 `__file /etc/example` in two files). Only literal object ids are compared.
 
-`editor-leftover`
-A swap or backup file lives inside the configuration (for example
-`manifest/autorun/.foo.swp`, which the autorun loop would source).
+`leftover-file`
+An editor, vcs or packaging leftover lives inside the configuration (for
+example `manifest/autorun/.foo.swp`, which the autorun loop would source, or
+`manifest/jitsi.old`). Leftovers are never parsed, only reported.
 
 `host-stale`
 The newest explorer output of a host is older than `--stale-days`, which means
@@ -144,6 +145,10 @@ includes. It can still be used explicitly with `runcdist -o`.
 
 `tag-unused`
 Tags that exist in the inventory but are used by no manifest.
+
+`manifest-disabled`
+A manifest whose first statement is `return 0` or `exit 0`: it is included and
+executed, but does nothing.
 
 # EXAMPLES
 
