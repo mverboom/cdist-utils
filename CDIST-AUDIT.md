@@ -92,8 +92,8 @@ one of its subdirectories.
 The repository directory passed to `include_cfg` does not exist.
 
 `include-cfg-file-missing`
-A `!name` reference inside an `include_cfg` source points at a file that is not
-found anywhere under that repository. This matters more than it looks:
+A `!name` reference inside a key of an `include_cfg` repository points at a
+file that is not in that repository (that is where `include_cfg` looks it up). This matters more than it looks:
 `include_cfg` stops at the first missing reference, so everything after it in
 the same file - other references included - is silently dropped (the call sites
 swallow the error with `|| true`). One deleted file can therefore stop a whole

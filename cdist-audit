@@ -478,51 +478,53 @@ def check_includes(audit: Audit, path: Path, text: str) -> None:
                               f"include_cfg repo {argument} is not a directory")
 
 
+def cfg_repo_dirs(audit: Audit) -> set[Path]:
+    """Return the directories that include_cfg reads its keys from.
+
+    include_cfg resolves both "@key" and "!file" against the repository
+    directory it is given as its first argument, so only the files directly in
+    that directory can contain references.
+    """
+    found: set[Path] = set()
+    for path in audit.shell_files():
+        for _, statement in logical_lines(path.read_text(errors="replace")):
+            tokens = tokenize(statement)
+            for index, token in enumerate(tokens):
+                if token != "include_cfg" or index + 1 >= len(tokens):
+                    continue
+                resolved = expand_files(audit, tokens[index + 1])
+                if resolved and resolved.is_dir():
+                    found.add(resolved)
+    return found
+
+
 def check_cfg_references(audit: Audit) -> None:
-    """Report files referenced with ! from an include_cfg source that are gone.
+    """Report files referenced with ! from an include_cfg key that are gone.
 
     include_cfg stops at the first missing reference, so everything after it in
-    that file - other references included - is silently dropped. That is how a
-    single deleted file can stop a whole block of configuration from ever being
-    applied.
+    that key - other references included - is silently dropped (the call sites
+    swallow the error with "|| true"). One deleted file can therefore stop a
+    whole block of configuration from ever being applied.
     """
-    cache: dict[Path, set[str]] = {}
-    for files_dir in audit.files_dirs:
-        if not files_dir.is_dir():
-            continue
-        for root, dirs, names in os.walk(files_dir):
-            dirs[:] = [name for name in dirs if name != ".git"]
-            for name in names:
-                path = Path(root) / name
-                if path.is_symlink() and not path.exists():
+    for repo in sorted(cfg_repo_dirs(audit)):
+        for path in sorted(entry for entry in _entries(repo)
+                           if entry.is_file()):
+            try:
+                if path.stat().st_size > MAX_CFG_FILE_SIZE:
                     continue
-                try:
-                    if path.stat().st_size > MAX_CFG_FILE_SIZE:
-                        continue
-                    content = path.read_text(errors="replace")
-                except OSError:
+                content = path.read_text(errors="replace")
+            except OSError:
+                continue
+            for line in content.splitlines():
+                match = CFG_REFERENCE.match(line.strip())
+                if not match:
                     continue
-                if "\0" in content:
+                target = match.group(1)
+                if "$" in target or (repo / target).exists():
                     continue
-                for line in content.splitlines():
-                    match = CFG_REFERENCE.match(line.strip())
-                    if not match:
-                        continue
-                    target = match.group(1)
-                    if "$" in target:
-                        continue
-                    repo = path.relative_to(files_dir).parts[0]
-                    if repo not in cache:
-                        names_found: set[str] = set()
-                        for _, _, walked_files in os.walk(files_dir / repo):
-                            names_found.update(walked_files)
-                        cache[repo] = names_found
-                    if target not in cache[repo]:
-                        audit.add("include-cfg-file-missing", "error", path,
-                                  None,
-                                  f"!{target} is not found anywhere under "
-                                  f"files/{repo}, and include_cfg stops at the "
-                                  "first missing reference")
+                audit.add("include-cfg-file-missing", "error", path, None,
+                          f"!{target} is not in {repo}, and include_cfg stops "
+                          "at the first missing reference")
 
 
 def check_parameters(audit: Audit, invocations: list[Invocation]) -> None:

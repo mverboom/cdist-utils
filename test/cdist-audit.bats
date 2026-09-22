@@ -67,6 +67,7 @@ __config_file /etc/other --state present --source "$files/missing/file"
 __file /etc/example --state present
 include no_such_manifest
 include_cfg "$files/nosuchdir" somekey
+include_cfg "$files/sshconfig/configs" cdist || true
 EOF
    printf '#!/bin/bash\nif true; then\n' > "$cfg/manifest/autorun/syntaxerror"
    printf '#!/bin/bash\necho dead\n' > "$cfg/manifest/old/dead"
@@ -81,9 +82,9 @@ EOF
    printf '#!/bin/sh\necho unused\n' > "$cfg/type/__unused_type/manifest"
    printf '#!/bin/sh\necho local\n' > "$cfg/explorer/local_explorer"
    printf 'content\n' > "$cfg/files/dir/file"
-   mkdir -p "$cfg/files/sshconfig/generic" "$cfg/files/sshconfig/configs"
-   printf '!present.conf\n' > "$cfg/files/sshconfig/generic/cdist"
-   printf '!missing.conf\n' > "$cfg/files/sshconfig/generic/mark"
+   mkdir -p "$cfg/files/sshconfig/configs"
+   printf '!present.conf\n!missing.conf\n' \
+      > "$cfg/files/sshconfig/configs/cdist"
    printf 'x\n' > "$cfg/files/sshconfig/configs/present.conf"
    ln -s /nonexistent/target "$cfg/type/__broken_type"
 
@@ -223,7 +224,7 @@ assert_path() {
    assert_check include-cfg-file-missing
    assert_message include-cfg-file-missing '!missing.conf'
    run messages_of include-cfg-file-missing
-   [[ "$output" != *"present.conf"* ]]
+   [[ "$output" != *"!present.conf"* ]]
 }
 
 @test "reports a syntax error" {
