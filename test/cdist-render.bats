@@ -131,6 +131,23 @@ run_render() {
    [[ "$output" == *"order"* ]]
 }
 
+@test "paths inside the run directory are normalised" {
+   cat > "$CR_FIX/normalize.py" <<'PY'
+import importlib.machinery, importlib.util, sys
+loader = importlib.machinery.SourceFileLoader("cr", sys.argv[1])
+spec = importlib.util.spec_from_loader("cr", loader)
+module = importlib.util.module_from_spec(spec)
+sys.modules["cr"] = module
+loader.exec_module(module)
+print(module.normalize_value(sys.argv[2]))
+PY
+   run python3 "$CR_FIX/normalize.py" "$CR_ROOT/cdist-render" \
+      "/tmp/x/data/object/__file/etc/a/.cdist-abc123/files/source"
+   [ "$output" = "<object>/files/source" ]
+   run python3 "$CR_FIX/normalize.py" "$CR_ROOT/cdist-render" "0644"
+   [ "$output" = "0644" ]
+}
+
 @test "reports hosts that appear or disappear between snapshots" {
    run_render host.example.com >/dev/null
    cp -a "$CR_FIX/snap" "$CR_FIX/baseline"

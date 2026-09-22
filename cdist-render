@@ -84,6 +84,10 @@ exit 0
 """
 
 ERROR_LINE = re.compile(r"^(ERROR|error):? ?(.*)$")
+# cdist sets e.g. --source to a path inside the run's object directory; that
+# path contains the run's random object marker and the temporary work dir, so
+# it has to be normalised or every render would look like a change.
+OBJECT_PATH = re.compile(r"/\.cdist-[^/]+/(.*)$")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -295,8 +299,8 @@ def parse_tree(data: Path) -> dict[str, object]:
         if parameter_path.is_dir():
             for entry in sorted(parameter_path.iterdir()):
                 if entry.is_file():
-                    parameters[entry.name] = entry.read_text(
-                        errors="replace").strip()
+                    parameters[entry.name] = normalize_value(
+                        entry.read_text(errors="replace").strip())
         objects.append({
             "name": "/".join(relative),
             "parameters": parameters,
@@ -310,6 +314,17 @@ def parse_tree(data: Path) -> dict[str, object]:
         "order": read_order(data),
         "messages": sorted(read_list(data / "messages")),
     }
+
+
+def normalize_value(value: str) -> str:
+    """Replace run specific object paths in a parameter value."""
+    if "/.cdist-" not in value:
+        return value
+    parts = []
+    for line in value.splitlines():
+        match = OBJECT_PATH.search(line)
+        parts.append(f"<object>/{match.group(1)}" if match else line)
+    return "\n".join(parts)
 
 
 def read_list(path: Path) -> list[str]:
