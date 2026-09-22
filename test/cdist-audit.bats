@@ -249,6 +249,17 @@ EOF
    [[ "$output" != *inside_a_heredoc* ]]
 }
 
+@test "audits a type that is a symlink into another repository" {
+   local ext="$CA_FIX/external-types.git"
+   mkdir -p "$ext/__linked_type/parameter"
+   printf '#!/bin/sh\n__local_type inner --state present --nosuchparam 1\n' \
+      > "$ext/__linked_type/manifest"
+   printf 'state\n' > "$ext/__linked_type/parameter/required"
+   ln -s "$ext/__linked_type" "$CA_FIX/config/type/__linked_type"
+   run_audit
+   assert_message param-unknown '--nosuchparam is not a parameter of __local_type'
+}
+
 @test "reports a manifest that does nothing" {
    printf 'return 0\n__file /etc/never --state present\n' \
       > "$CA_FIX/config/manifest/autorun/disabled"

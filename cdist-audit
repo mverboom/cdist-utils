@@ -142,19 +142,21 @@ class Audit:
                 )
 
     def config_files(self) -> list[Path]:
-        """Return every file that may take part in a cdist run."""
+        """Return every file that may take part in a cdist run.
+
+        Type directories are often symlinks into an external repository, so the
+        walk has to follow them; otherwise half of the custom types is skipped.
+        """
         found: list[Path] = []
         for base in self.config_dirs:
             manifest = base / "manifest"
             if manifest.is_dir():
-                found += [path for path in manifest.rglob("*")
-                          if path.is_file() and ".git" not in path.parts]
+                found += walk(manifest)
             for type_dir in _entries(base / "type"):
-                if not type_dir.is_dir() or ".git" in type_dir.parts:
+                if not type_dir.is_dir():
                     continue
-                found += [path for path in type_dir.rglob("*")
-                          if path.is_file() and is_shell_candidate(type_dir,
-                                                                   path)]
+                found += [path for path in walk(type_dir)
+                          if is_shell_candidate(type_dir, path)]
         return sorted(set(found))
 
     def shell_files(self) -> list[Path]:
@@ -183,6 +185,15 @@ class Audit:
     def file_missing(self, relative: str) -> bool:
         """Return whether a relative $files/... path exists nowhere."""
         return not any((base / relative).exists() for base in self.files_dirs)
+
+
+def walk(directory: Path) -> list[Path]:
+    """Return every file below a directory, following symlinked directories."""
+    found: list[Path] = []
+    for root, dirs, files in os.walk(directory, followlinks=True):
+        dirs[:] = [name for name in dirs if name != ".git"]
+        found += [Path(root) / name for name in files]
+    return found
 
 
 def is_shell_candidate(type_dir: Path, path: Path) -> bool:
@@ -569,7 +580,8 @@ def check_dead_code(audit: Audit) -> None:
         if re.search(rf"(^|[^A-Za-z0-9_])e_{re.escape(name)}\b", text):
             continue
         audit.add("explorer-unused", "info", path, None,
-                  f"explorer {name} is not used by the configuration")
+                  f"explorer {name} is not referenced by any manifest or type "
+                  "(eq and the inventory rules may still use it)")
     for path in audit.shell_files():
         if "manifest" not in path.parts:
             continue
