@@ -58,8 +58,11 @@ there is a single source of truth with the CLI, completion and `--help`.
 
 ## Deployment
 
-The runner and wrapper are symlinked from the cdist-utils checkout, so a
-`git pull` activates changes (script-server re-reads runner files on page load):
+The runner, its include files and the wrapper are symlinked from the
+cdist-utils checkout, so a `git pull` activates changes (script-server re-reads
+runner files on page load). The `include` in `eq.json` is relative, so
+script-server resolves it against its own `runners/` directory; no filesystem
+layout is hard-coded:
 
 ```sh
 cd /home/cdist/files.external/cdist-utils.git && git pull --ff-only origin master
@@ -68,6 +71,12 @@ cd /home/cdist/files.external/cdist-utils.git && git pull --ff-only origin maste
 cp -a /etc/script-server-dev/runners/eq.json /root/eq.json.bak-$(date +%Y%m%d-%H%M)
 ln -sfn /home/cdist/files.external/cdist-utils.git/scriptserver/eq.json \
         /etc/script-server-dev/runners/eq.json
+
+# include files live next to the other runners' include files
+ln -sfn /home/cdist/files.external/cdist-utils.git/scriptserver/include/eq-builder.json \
+        /etc/script-server-dev/runners/include/eq-builder.json
+ln -sfn /home/cdist/files.external/cdist-utils.git/scriptserver/include/eq-run.json \
+        /etc/script-server-dev/runners/include/eq-run.json
 
 # wrapper
 ln -sfn ../files.external/cdist-utils.git/scriptserver/eq-ss /home/cdist/bin/eq-ss

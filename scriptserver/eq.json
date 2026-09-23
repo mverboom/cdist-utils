@@ -20,5 +20,5 @@
       }
     }
   ],
-  "include": "/home/cdist/files.external/cdist-utils.git/scriptserver/include/eq-${Action}.json"
+  "include": "include/eq-${Action}.json"
 }
