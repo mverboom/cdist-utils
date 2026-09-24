@@ -1,0 +1,274 @@
+#!/usr/bin/env python3
+"""Minimal Zabbix API helper used by cdist manifests.
+
+Supports creating hosts, linking templates and enabling/disabling the
+triggers that are assigned to a host (inherited from templates or owned by
+the host).  The API token is read from ``~/.zabbix-token`` unless
+``ZABBIX_TOKEN`` is set; the endpoint can be overridden with ``ZABBIX_API``.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import sys
+from pathlib import Path
+from typing import Any
+
+import requests
+
+API_URL = "https://zabbix.lnw.verboom.net/zabbix/api_jsonrpc.php"
+TOKEN_FILE = Path.home() / ".zabbix-token"
+GROUP = "Production"
+HOST_TEMPLATE = "Template OS Linux"
+
+ENABLED = 0
+DISABLED = 1
+TIMEOUT = 30
+
+# The helper talks to the Zabbix server directly; ignore ambient proxy settings.
+SESSION = requests.Session()
+SESSION.trust_env = False
+
+
+class ZabbixError(RuntimeError):
+    """Raised when the API cannot be reached or returns an error."""
+
+
+def endpoint() -> str:
+    """Return the API endpoint, honouring the ZABBIX_API override."""
+    return os.environ.get("ZABBIX_API", API_URL)
+
+
+def api_token() -> str:
+    """Return the API token from the environment or the token file."""
+    token = os.environ.get("ZABBIX_TOKEN")
+    if token:
+        return token
+    try:
+        return TOKEN_FILE.read_text().strip()
+    except OSError as exc:
+        raise ZabbixError(f"cannot read token from {TOKEN_FILE}: {exc}") from exc
+
+
+def call(method: str, params: dict[str, Any] | None = None) -> Any:
+    """Call a JSON-RPC method and return its result, raising on API errors."""
+    payload = {
+        "jsonrpc": "2.0",
+        "method": method,
+        "params": params or {},
+        "id": 1,
+    }
+    headers = {
+        "Content-Type": "application/json-rpc",
+        "Authorization": f"Bearer {api_token()}",
+    }
+    try:
+        response = SESSION.post(
+            endpoint(), json=payload, headers=headers, timeout=TIMEOUT
+        )
+        response.raise_for_status()
+        body = response.json()
+    except (requests.RequestException, json.JSONDecodeError) as exc:
+        raise ZabbixError(f"{method} failed: {exc}") from exc
+
+    error = body.get("error")
+    if error:
+        message = error.get("message", "unknown error")
+        raise ZabbixError(f"{method}: {message} ({error.get('data', '')})")
+    return body.get("result")
+
+
+def search(method: str, field: str, value: str, output: list[str]) -> list[dict[str, Any]]:
+    """Search an API method by an exact value (no wildcards)."""
+    return call(
+        method,
+        {
+            "search": {field: value},
+            "searchWildcardsEnabled": True,
+            "output": output,
+        },
+    )
+
+
+def matching_hosts(host: str) -> list[dict[str, Any]]:
+    """Return hosts whose technical host name matches exactly."""
+    return search("host.get", "host", host, ["hostid", "host"])
+
+
+def host_id(host: str) -> str:
+    """Resolve the id of a single host, failing when the match is ambiguous."""
+    hosts = matching_hosts(host)
+    if len(hosts) != 1:
+        raise ZabbixError(f"Not single host match for {host} ({len(hosts)}).")
+    return hosts[0]["hostid"]
+
+
+def template_id(template: str) -> str:
+    """Resolve a template id by its technical host name."""
+    templates = search("template.get", "host", template, ["templateid"])
+    if len(templates) != 1:
+        raise ZabbixError(
+            f"Not single template match for {template} ({len(templates)})."
+        )
+    return templates[0]["templateid"]
+
+
+def cmd_check(host: str) -> None:
+    """Print the number of hosts matching the given host name."""
+    print(len(matching_hosts(host)))
+
+
+def cmd_add(host: str, ip: str, psk: str, proxy: str | None) -> None:
+    """Create a monitored host with PSK encryption and the default template."""
+    if matching_hosts(host):
+        raise ZabbixError("Host already exists.")
+
+    optional: dict[str, Any] = {}
+    if proxy:
+        proxies = search("proxy.get", "name", proxy, ["proxyid", "name"])
+        if not proxies:
+            raise ZabbixError("Proxy does not exist.")
+        optional["monitored_by"] = 1
+        optional["proxyid"] = proxies[0]["proxyid"]
+
+    templates = search("template.get", "name", HOST_TEMPLATE, ["templateid"])
+    if not templates:
+        raise ZabbixError("Template does not exist.")
+    groups = search("hostgroup.get", "name", GROUP, ["groupid"])
+    if not groups:
+        raise ZabbixError("Group does not exist.")
+
+    params: dict[str, Any] = {
+        "host": host,
+        "interfaces": [
+            {
+                "type": 1,
+                "main": 1,
+                "useip": 1,
+                "ip": ip,
+                "dns": "",
+                "port": "10050",
+            }
+        ],
+        "groups": [{"groupid": groups[0]["groupid"]}],
+        "templates": [{"templateid": templates[0]["templateid"]}],
+        "tls_connect": 2,
+        "tls_accept": 3,
+        "tls_psk_identity": host,
+        "tls_psk": psk,
+    }
+    params.update(optional)
+    call("host.create", params)
+
+
+def cmd_template(host: str, template: str) -> None:
+    """Link a template to a host when it is not linked yet."""
+    tid = template_id(template)
+    hid = host_id(host)
+
+    result = call("host.get", {"hostids": hid, "selectParentTemplates": ["templateid"]})
+    linked = [t["templateid"] for t in result[0]["parentTemplates"]]
+    if tid in linked:
+        return
+
+    linked.append(tid)
+    call("host.update", {"hostid": hid, "templates": [{"templateid": t} for t in linked]})
+
+
+def find_triggers(hostid: str, patterns: list[str]) -> list[dict[str, Any]]:
+    """Return the host's triggers matching any of the description patterns.
+
+    A pattern without ``*`` is treated as a substring; with ``*`` it is used
+    as a glob against the trigger description.
+    """
+    found: dict[str, dict[str, Any]] = {}
+    for pattern in patterns:
+        glob = pattern if "*" in pattern else f"*{pattern}*"
+        result = call(
+            "trigger.get",
+            {
+                "hostids": hostid,
+                "search": {"description": glob},
+                "searchWildcardsEnabled": True,
+                "output": ["triggerid", "description", "status"],
+            },
+        )
+        for trigger in result:
+            found[trigger["triggerid"]] = trigger
+    return sorted(found.values(), key=lambda t: t["description"])
+
+
+def cmd_trigger(
+    host: str, action: str, patterns: list[str], dry_run: bool
+) -> None:
+    """List, enable or disable the host's triggers matching the patterns."""
+    triggers = find_triggers(host_id(host), patterns)
+
+    if action == "list":
+        for trigger in triggers:
+            state = "enabled" if int(trigger["status"]) == ENABLED else "disabled"
+            print(f"{trigger['triggerid']} {state} {trigger['description']}")
+        return
+
+    target = ENABLED if action == "enable" else DISABLED
+    for trigger in triggers:
+        if int(trigger["status"]) == target:
+            continue
+        print(f"{action}: {trigger['description']} ({trigger['triggerid']})")
+        if not dry_run:
+            call(
+                "trigger.update",
+                {"triggerid": trigger["triggerid"], "status": target},
+            )
+
+
+def build_parser() -> argparse.ArgumentParser:
+    """Build the command line parser for all subcommands."""
+    parser = argparse.ArgumentParser(prog="zabbix", description=__doc__)
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    check = sub.add_parser("check", help="count hosts matching a host name")
+    check.add_argument("host")
+
+    add = sub.add_parser("add", help="create a host")
+    add.add_argument("host")
+    add.add_argument("ip")
+    add.add_argument("psk")
+    add.add_argument("proxy", nargs="?")
+
+    template = sub.add_parser("template", help="link a template to a host")
+    template.add_argument("host")
+    template.add_argument("template")
+
+    trigger = sub.add_parser("trigger", help="list/enable/disable host triggers")
+    trigger.add_argument("host")
+    trigger.add_argument("action", choices=["list", "enable", "disable"])
+    trigger.add_argument("patterns", nargs="+", metavar="pattern")
+    trigger.add_argument(
+        "--dry-run", action="store_true", help="show changes without applying them"
+    )
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Dispatch the requested subcommand, returning a shell exit code."""
+    args = build_parser().parse_args(argv)
+    try:
+        if args.command == "check":
+            cmd_check(args.host)
+        elif args.command == "add":
+            cmd_add(args.host, args.ip, args.psk, args.proxy)
+        elif args.command == "template":
+            cmd_template(args.host, args.template)
+        elif args.command == "trigger":
+            cmd_trigger(args.host, args.action, args.patterns, args.dry_run)
+    except ZabbixError as exc:
+        print(f"zabbix: {exc}", file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
