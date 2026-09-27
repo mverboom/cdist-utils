@@ -26,28 +26,10 @@
       "pass_as": "argument"
     },
     {
-      "name": "layout",
-      "type": "list",
-      "default": "wrapped",
-      "description": "Tree view: wrapped = compact top-down tree with wide levels wrapped (default); graph = Graphviz layered tree.",
-      "values": ["wrapped", "graph"],
-      "param": "--layout",
-      "pass_as": "argument"
-    },
-    {
-      "name": "order",
-      "type": "list",
-      "default": "dependents",
-      "description": "Tree view: dependents = objects that depend on something first (default); primitives = objects that depend on nothing first.",
-      "values": ["dependents", "primitives"],
-      "param": "--order",
-      "pass_as": "argument"
-    },
-    {
       "name": "orientation",
       "type": "list",
       "default": "lr",
-      "description": "Graph layout only (layout = graph): lr = levels left-to-right; tb = top-to-bottom.",
+      "description": "Tree view: lr = levels left-to-right (default); tb = levels top-to-bottom.",
       "values": ["lr", "tb"],
       "param": "--orientation",
       "pass_as": "argument"
@@ -78,6 +60,15 @@
       "description": "With a focus: up = its dependencies, down = its dependents.",
       "values": ["both", "up", "down"],
       "param": "--direction",
+      "pass_as": "argument"
+    },
+    {
+      "name": "order",
+      "type": "list",
+      "default": "dependents",
+      "description": "Tree view: dependents = objects that depend on something first (default); primitives = objects that depend on nothing first.",
+      "values": ["dependents", "primitives"],
+      "param": "--order",
       "pass_as": "argument"
     },
     {
