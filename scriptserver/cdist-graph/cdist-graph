@@ -453,6 +453,13 @@ HTML_TEMPLATE = """<!DOCTYPE html>
   #stage.dragging {{ cursor: grabbing; }}
   #stage svg {{ max-width: none; transform-origin: 0 0; }}
   .sep {{ margin: 0 8px; color: #999999; }}
+  #cg-search {{ font-size: 13px; width: 200px; }}
+  #cg-count {{ margin-left: 6px; color: #666666; }}
+  .cg-hit polygon, .cg-hit ellipse, .cg-hit path {{
+      stroke: #000000 !important; stroke-width: 2.5 !important; }}
+  .cg-hit text {{ font-weight: bold !important; }}
+  .cg-current polygon, .cg-current ellipse, .cg-current path {{
+      stroke: #000000 !important; stroke-width: 5 !important; }}
 </style>
 </head>
 <body>
@@ -466,6 +473,11 @@ HTML_TEMPLATE = """<!DOCTYPE html>
               padding: 0 5px;">require</span>
   <span style="border: 1px solid #333333; border-top: 2px dashed #333333;
               padding: 0 5px;">autorequire</span>
+  <span class="sep">|</span>
+  <input id="cg-search" type="search" placeholder="search object\u2026">
+  <button type="button" id="cg-prev">prev</button>
+  <button type="button" id="cg-next">next</button>
+  <span id="cg-count"></span>
   <span class="sep">|</span>
   <button type="button" data-zoom="1.25">zoom in</button>
   <button type="button" data-zoom="0.8">zoom out</button>
@@ -510,6 +522,57 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       if (factor === 0) {{ scale = 1; x = 0; y = 0; }} else {{ scale *= factor; }}
       apply();
     }});
+  }});
+
+  var input = document.getElementById("cg-search");
+  var count = document.getElementById("cg-count");
+  var nodes = Array.prototype.slice.call(svg.querySelectorAll("g.node"));
+  var hits = [], current = -1;
+  function nodeText(node) {{ return (node.textContent || "").toLowerCase(); }}
+  function clearHits() {{
+    hits.forEach(function (node) {{ node.classList.remove("cg-hit", "cg-current"); }});
+    hits = []; current = -1; count.textContent = "";
+  }}
+  function centerOn(node) {{
+    var r = node.getBoundingClientRect(), s = stage.getBoundingClientRect();
+    x += (s.left + s.width / 2) - (r.left + r.width / 2);
+    y += (s.top + s.height / 2) - (r.top + r.height / 2);
+    apply();
+  }}
+  function selectMatch(index) {{
+    if (!hits.length) return;
+    if (current >= 0) hits[current].classList.remove("cg-current");
+    current = ((index % hits.length) + hits.length) % hits.length;
+    hits[current].classList.add("cg-current");
+    centerOn(hits[current]);
+    count.textContent = (current + 1) + "/" + hits.length;
+  }}
+  function runSearch() {{
+    clearHits();
+    var query = input.value.trim().toLowerCase();
+    if (!query) return;
+    nodes.forEach(function (node) {{
+      if (nodeText(node).indexOf(query) >= 0) {{
+        node.classList.add("cg-hit"); hits.push(node);
+      }}
+    }});
+    if (hits.length) selectMatch(0);
+    else count.textContent = "no match";
+  }}
+  input.addEventListener("input", runSearch);
+  input.addEventListener("keydown", function (event) {{
+    if (event.key === "Enter") {{
+      event.preventDefault();
+      selectMatch(current + (event.shiftKey ? -1 : 1));
+    }} else if (event.key === "Escape") {{
+      input.value = ""; runSearch();
+    }}
+  }});
+  document.getElementById("cg-prev").addEventListener("click", function () {{
+    selectMatch(current - 1);
+  }});
+  document.getElementById("cg-next").addEventListener("click", function () {{
+    selectMatch(current + 1);
   }});
   apply();
 }})();

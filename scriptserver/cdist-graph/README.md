@@ -36,6 +36,14 @@ always point dependency → dependent. `require` edges are solid and
 `autorequire` dashed (line style, not colour, so it stays readable for
 colour-blind users).
 
+### Searching
+
+The page has a search box (top bar). Typing filters case-insensitively on the
+object name and highlights every match with a heavy outline (not colour), then
+centres the first one; `Enter` / the `next` and `prev` buttons jump through the
+matches and `Escape` clears the search. This is the practical way to use the
+very wide top-down tree.
+
 ### Why the tree view collapses chains
 
 The levels are the longest-path rank over `require` **and** `autorequire`;
