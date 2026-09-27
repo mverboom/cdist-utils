@@ -28,8 +28,8 @@
     {
       "name": "orientation",
       "type": "list",
-      "default": "lr",
-      "description": "Tree view: lr = levels left-to-right (default); tb = levels top-to-bottom.",
+      "default": "tb",
+      "description": "Tree view: tb = levels top-to-bottom (default); lr = levels left-to-right.",
       "values": ["lr", "tb"],
       "param": "--orientation",
       "pass_as": "argument"

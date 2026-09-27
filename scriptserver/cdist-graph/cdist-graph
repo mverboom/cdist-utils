@@ -316,6 +316,7 @@ def build_tree_dot(nodes, require, autorequire, collapse, rankdir="LR",
         "digraph cdist {",
         "  rankdir={};".format(rankdir),
         "  compound=true;",
+        "  graph [nodesep=0.08, ranksep=0.35];",
         "  node [{}];".format(TREE_NODE_ATTR),
         "  edge [{}];".format(TREE_EDGE_ATTR),
     ]
@@ -552,9 +553,9 @@ def parse_args(argv):
                         default="tree",
                         help="tree = layered levels (default); types = per-type "
                              "network; objects = per-object network")
-    parser.add_argument("--orientation", choices=("lr", "tb"), default="lr",
-                        help="tree view: lr = levels left-to-right (default), "
-                             "tb = levels top-to-bottom")
+    parser.add_argument("--orientation", choices=("lr", "tb"), default="tb",
+                        help="tree view: tb = levels top-to-bottom (default), "
+                             "lr = levels left-to-right")
     parser.add_argument("--order", choices=("dependents", "primitives"),
                         default="dependents",
                         help="tree view: dependents = objects that depend on "
