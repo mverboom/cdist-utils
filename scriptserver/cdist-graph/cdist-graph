@@ -1,0 +1,481 @@
+#!/usr/bin/env python3
+"""cdist-graph - visualise the dependency graph of a host's cdist object tree.
+
+The graph is built from the object tree cdist leaves behind in
+~/.cdist/cache for the most recent run of a host. It shows the
+require/autorequire relationships, i.e. the execution-order dependencies
+cdist resolves between objects. No host is contacted and nothing is
+configured.
+
+Two levels are available:
+
+* types   - objects collapsed to their type (e.g. __file -> __package),
+            with the number of objects and edges per type. Compact, good
+            for an overview of the whole system.
+* objects - every object as its own node, grouped in a cluster per type.
+            Detailed; meant to be narrowed with --focus or --types.
+
+Default output is a self-contained HTML page (interactive pan/zoom) meant
+for script-server's html_iframe output format. --dot and --svg dump the
+raw representations instead.
+
+Helper subcommands --list-hosts, --list-types and --list-objects feed
+script-server parameter values.
+"""
+
+import argparse
+import html
+import os
+import shutil
+import signal
+import subprocess
+import sys
+from collections import defaultdict, deque
+
+# Behave like a normal Unix filter when output is piped to head etc.
+if hasattr(signal, "SIGPIPE"):
+    signal.signal(signal.SIGPIPE, signal.SIG_DFL)
+
+CACHE_DIR = os.path.join(os.path.expanduser("~"), ".cdist", "cache")
+
+NODE_ATTR = ('shape=box, style="rounded,filled", fillcolor="#f2f2f2", '
+             'fontname="Helvetica", fontsize=10, margin="0.06,0.03"')
+EDGE_ATTR = 'fontname="Helvetica", fontsize=9, color="#333333", arrowsize=0.7'
+
+
+def fail(message):
+    """Print an error and exit non-zero."""
+    print("cdist-graph: {}".format(message), file=sys.stderr)
+    sys.exit(1)
+
+
+def cache_entries():
+    """Yield (host, cache_path) for every cache directory that has a host."""
+    try:
+        scanner = os.scandir(CACHE_DIR)
+    except OSError:
+        return
+    with scanner:
+        for entry in scanner:
+            if not entry.is_dir(follow_symlinks=False):
+                continue
+            hostfile = os.path.join(entry.path, "target_host")
+            if not os.path.isfile(hostfile):
+                continue
+            try:
+                with open(hostfile, encoding="utf-8") as handle:
+                    host = handle.read().strip()
+            except OSError:
+                continue
+            if host:
+                yield host, entry.path
+
+
+def find_cache(host):
+    """Return the newest cache directory for host, or None."""
+    best = None
+    for cached_host, path in cache_entries():
+        if cached_host != host:
+            continue
+        try:
+            age = os.path.getmtime(os.path.join(path, "object"))
+        except OSError:
+            age = 0
+        if best is None or age > best[0]:
+            best = (age, path)
+    return best[1] if best else None
+
+
+def normalize(name):
+    """cdist names an object without an id as "__type/"; drop the trailing /."""
+    return name[:-1] if name.endswith("/") else name
+
+
+def load_graph(cache):
+    """Return (nodes, require_edges, autorequire_edges) from a cache dir.
+
+    nodes maps object name -> type. Edges are (dependent, dependency)
+    pairs, i.e. the first object requires the second.
+    """
+    try:
+        with open(os.path.join(cache, "object_marker"), encoding="utf-8") as handle:
+            marker = handle.read().strip()
+    except OSError as error:
+        fail("cannot read object marker in {}: {}".format(cache, error))
+
+    objroot = os.path.join(cache, "object")
+    nodes = {}
+    edges = {"require": [], "autorequire": []}
+    for dirpath, _dirnames, _filenames in os.walk(objroot):
+        if os.path.basename(dirpath) != marker:
+            continue
+        obj = normalize(os.path.relpath(os.path.dirname(dirpath), objroot))
+        nodes[obj] = obj.split("/", 1)[0]
+        for kind in edges:
+            path = os.path.join(dirpath, kind)
+            if not os.path.isfile(path):
+                continue
+            seen = set()
+            with open(path, encoding="utf-8") as handle:
+                for line in handle:
+                    dep = normalize(line.strip())
+                    if dep and dep not in seen:
+                        seen.add(dep)
+                        edges[kind].append((obj, dep))
+    return nodes, edges["require"], edges["autorequire"]
+
+
+def connected(nodes, require, autorequire, focus, direction):
+    """Return the subset of nodes connected to focus in the requested direction."""
+    forward = defaultdict(set)   # a -> things a requires
+    backward = defaultdict(set)  # b -> things that require b
+    for dependent, dependency in require + autorequire:
+        forward[dependent].add(dependency)
+        backward[dependency].add(dependent)
+
+    def walk(adjacency):
+        keep = {focus}
+        queue = deque([focus])
+        while queue:
+            current = queue.popleft()
+            for other in adjacency[current]:
+                if other not in keep:
+                    keep.add(other)
+                    queue.append(other)
+        return keep
+
+    if direction == "up":
+        return walk(forward)
+    if direction == "down":
+        return walk(backward)
+    return walk(forward) | walk(backward)
+
+
+def restrict(nodes, require, autorequire, keep):
+    """Drop everything not in keep from nodes and edges."""
+    nodes = {n: t for n, t in nodes.items() if n in keep}
+    require = [(a, b) for a, b in require if a in keep and b in keep]
+    autorequire = [(a, b) for a, b in autorequire if a in keep and b in keep]
+    return nodes, require, autorequire
+
+
+def dot_quote(text):
+    """Quote a Graphviz identifier, escaping backslashes and quotes."""
+    text = text.replace("\\", "\\\\").replace('"', '\\"').replace("\n", " ")
+    return '"{}"'.format(text)
+
+
+def node_label(name):
+    """Short label: object id without the leading type."""
+    return name.split("/", 1)[1] if "/" in name else name
+
+
+def edge_attrs(kinds):
+    """Graphviz attributes for an edge that carries the given kinds.
+
+    require drives the ranking. autorequire is drawn but not allowed to
+    influence it, otherwise Graphviz' ranking explodes on big fan-ins
+    (e.g. __le and ~200 cert files).
+    """
+    if "require" in kinds:
+        return "style=solid"
+    return "style=dashed, constraint=false"
+
+
+def build_object_dot(nodes, require, autorequire, rankdir):
+    """Render every object as a node, clustered per type."""
+    by_type = defaultdict(list)
+    for name, type_name in nodes.items():
+        by_type[type_name].append(name)
+
+    lines = [
+        "digraph cdist {",
+        "  rankdir={};".format(rankdir),
+        "  compound=true;",
+        "  node [{}];".format(NODE_ATTR),
+        "  edge [{}];".format(EDGE_ATTR),
+    ]
+
+    for index, type_name in enumerate(sorted(by_type)):
+        lines.append("  subgraph cluster_{} {{".format(index))
+        lines.append("    label={};".format(dot_quote(type_name)))
+        lines.append('    style="rounded,dashed"; color="#bbbbbb"; fontsize=11;')
+        for name in sorted(by_type[type_name]):
+            lines.append("    {} [label={}, tooltip={}];".format(
+                dot_quote(name), dot_quote(node_label(name)), dot_quote(name)))
+        lines.append("  }")
+
+    # Edge dependency -> dependent, so arrows follow execution order.
+    kinds = defaultdict(set)
+    for dependent, dependency in require:
+        if dependency in nodes and dependent in nodes:
+            kinds[(dependency, dependent)].add("require")
+    for dependent, dependency in autorequire:
+        if dependency in nodes and dependent in nodes:
+            kinds[(dependency, dependent)].add("autorequire")
+
+    for (source, target), kind_set in sorted(kinds.items()):
+        lines.append("  {} -> {} [{}];".format(
+            dot_quote(source), dot_quote(target), edge_attrs(kind_set)))
+
+    lines.append("}")
+    return "\n".join(lines)
+
+
+def build_type_dot(nodes, require, autorequire, rankdir):
+    """Collapse objects to their type and aggregate the edge counts."""
+    counts = defaultdict(int)
+    for type_name in nodes.values():
+        counts[type_name] += 1
+
+    kinds = defaultdict(lambda: {"require": 0, "autorequire": 0})
+    for dependent, dependency in require:
+        if dependency in nodes and dependent in nodes:
+            kinds[(nodes[dependency], nodes[dependent])]["require"] += 1
+    for dependent, dependency in autorequire:
+        if dependency in nodes and dependent in nodes:
+            kinds[(nodes[dependency], nodes[dependent])]["autorequire"] += 1
+
+    lines = [
+        "digraph cdist {",
+        "  rankdir={};".format(rankdir),
+        "  compound=true;",
+        "  node [{}];".format(NODE_ATTR.replace("fontsize=10", "fontsize=11")),
+        "  edge [{}];".format(EDGE_ATTR),
+    ]
+    for type_name in sorted(counts):
+        label = "{} ({})".format(type_name, counts[type_name])
+        lines.append("  {} [label={}];".format(
+            dot_quote(type_name), dot_quote(label)))
+
+    for (source, target), count in sorted(kinds.items()):
+        parts = []
+        if count["require"]:
+            parts.append(str(count["require"]))
+        if count["autorequire"]:
+            parts.append("{} ar".format(count["autorequire"]))
+        attrs = "label={}, {}".format(
+            dot_quote(" / ".join(parts)),
+            edge_attrs({k for k, v in count.items() if v}))
+        lines.append("  {} -> {} [{}];".format(
+            dot_quote(source), dot_quote(target), attrs))
+
+    lines.append("}")
+    return "\n".join(lines)
+
+
+def render_svg(dot_source):
+    """Run Graphviz dot to turn DOT into SVG."""
+    dot_binary = shutil.which("dot")
+    if not dot_binary:
+        fail("graphviz 'dot' not found in PATH (install graphviz)")
+    result = subprocess.run(
+        [dot_binary, "-Tsvg"],
+        input=dot_source.encode("utf-8"),
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+    )
+    if result.returncode != 0:
+        fail("dot failed: {}".format(result.stderr.decode("utf-8", "replace").strip()))
+    return result.stdout.decode("utf-8")
+
+
+HTML_TEMPLATE = """<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>cdist dependency graph: {host}</title>
+<style>
+  html, body {{ margin: 0; height: 100%; overflow: hidden;
+                font-family: Helvetica, Arial, sans-serif; background: #fff; }}
+  #toolbar {{ position: fixed; top: 0; left: 0; right: 0; z-index: 2;
+             padding: 6px 10px; background: #eeeeee;
+             border-bottom: 1px solid #cccccc; font-size: 13px; }}
+  #toolbar button {{ font-size: 13px; margin-left: 4px; }}
+  #stage {{ position: absolute; top: 39px; left: 0; right: 0; bottom: 0;
+           overflow: hidden; cursor: grab; }}
+  #stage.dragging {{ cursor: grabbing; }}
+  #stage svg {{ max-width: none; transform-origin: 0 0; }}
+  .sep {{ margin: 0 8px; color: #999999; }}
+</style>
+</head>
+<body>
+<div id="toolbar">
+  <strong>{host}</strong>
+  <span class="sep">|</span>{summary}
+  <span class="sep">|</span>cache: {cache_age}
+  <span class="sep">|</span>{scope}
+  <span class="sep">|</span>
+  <span style="border: 1px solid #333333; border-top: 2px solid #333333;
+              padding: 0 5px;">require</span>
+  <span style="border: 1px solid #333333; border-top: 2px dashed #333333;
+              padding: 0 5px;">autorequire</span>
+  <span class="sep">|</span>
+  <button type="button" data-zoom="1.25">zoom in</button>
+  <button type="button" data-zoom="0.8">zoom out</button>
+  <button type="button" data-zoom="0">reset</button>
+  <span class="sep">|</span>drag to pan, scroll to zoom
+</div>
+<div id="stage">
+{svg}
+</div>
+<script>
+(function () {{
+  var stage = document.getElementById("stage");
+  var svg = stage.querySelector("svg");
+  var scale = 1, x = 0, y = 0, dragging = false, startX = 0, startY = 0;
+  function apply() {{
+    svg.style.transform = "translate(" + x + "px," + y + "px) scale(" + scale + ")";
+  }}
+  stage.addEventListener("wheel", function (event) {{
+    event.preventDefault();
+    var box = stage.getBoundingClientRect();
+    var px = event.clientX - box.left, py = event.clientY - box.top;
+    var factor = event.deltaY < 0 ? 1.15 : 1 / 1.15;
+    x = px - (px - x) * factor;
+    y = py - (py - y) * factor;
+    scale *= factor;
+    apply();
+  }}, {{passive: false}});
+  stage.addEventListener("mousedown", function (event) {{
+    dragging = true; stage.classList.add("dragging");
+    startX = event.clientX - x; startY = event.clientY - y;
+  }});
+  window.addEventListener("mousemove", function (event) {{
+    if (!dragging) return;
+    x = event.clientX - startX; y = event.clientY - startY; apply();
+  }});
+  window.addEventListener("mouseup", function () {{
+    dragging = false; stage.classList.remove("dragging");
+  }});
+  document.querySelectorAll("[data-zoom]").forEach(function (button) {{
+    button.addEventListener("click", function () {{
+      var factor = parseFloat(button.dataset.zoom);
+      if (factor === 0) {{ scale = 1; x = 0; y = 0; }} else {{ scale *= factor; }}
+      apply();
+    }});
+  }});
+  apply();
+}})();
+</script>
+</body>
+</html>
+"""
+
+
+def human_age(seconds):
+    """Format an age in seconds as a short human string."""
+    seconds = int(max(0, seconds))
+    for unit, size in (("d", 86400), ("h", 3600), ("m", 60)):
+        if seconds >= size:
+            return "{}{} ago".format(seconds // size, unit)
+    return "{}s ago".format(seconds)
+
+
+def build_html(host, cache, dot_source, summary, scope):
+    """Wrap the rendered SVG in the interactive page."""
+    try:
+        age = human_age(os.path.getmtime(os.path.join(cache, "object")))
+    except OSError:
+        age = "unknown"
+    return HTML_TEMPLATE.format(
+        host=html.escape(host),
+        svg=render_svg(dot_source),
+        summary=html.escape(summary),
+        cache_age=html.escape(age),
+        scope=html.escape(scope),
+    )
+
+
+def parse_args(argv):
+    """Parse the command line."""
+    parser = argparse.ArgumentParser(
+        prog="cdist-graph",
+        description="Visualise a host's cdist dependency graph from a cached run.")
+    parser.add_argument("host", nargs="?", help="host name (fqdn / cache name)")
+    parser.add_argument("--level", choices=("types", "objects"), default="objects",
+                        help="types = collapse to type level (default objects)")
+    parser.add_argument("--focus", metavar="OBJECT",
+                        help="object to centre on, e.g. __file/etc/motd")
+    parser.add_argument("--direction", choices=("both", "up", "down"),
+                        default="both",
+                        help="with --focus: up=its dependencies, down=dependents")
+    parser.add_argument("--types", metavar="TYPE", action="append", default=[],
+                        help="object type to keep (repeatable)")
+    parser.add_argument("--dot", action="store_true", help="print raw DOT")
+    parser.add_argument("--svg", action="store_true", help="print raw SVG")
+    parser.add_argument("--list-hosts", action="store_true",
+                        help="print hosts that have a cached run")
+    parser.add_argument("--list-types", action="store_true",
+                        help="print object types of the given host")
+    parser.add_argument("--list-objects", action="store_true",
+                        help="print object names of the given host")
+    return parser.parse_args(argv)
+
+
+def main(argv):
+    """Entry point."""
+    args = parse_args(argv)
+
+    if args.list_hosts:
+        for host in sorted({h for h, _ in cache_entries()}):
+            print(host)
+        return 0
+
+    if not args.host:
+        fail("a host is required")
+
+    cache = find_cache(args.host)
+    if not cache:
+        fail("no cached cdist run for host '{}'".format(args.host))
+
+    all_nodes, require, autorequire = load_graph(cache)
+
+    if args.list_types:
+        print("\n".join(sorted({t for t in all_nodes.values()})))
+        return 0
+    if args.list_objects:
+        print("\n".join(sorted(all_nodes)))
+        return 0
+
+    nodes = all_nodes
+    scope = "all objects"
+    keep = None
+    if args.types:
+        types = {t for value in args.types for t in value.split(",") if t}
+        keep = {n for n, t in nodes.items() if t in types}
+        scope = "types: {}".format(",".join(sorted(types)))
+    if args.focus:
+        if args.focus not in nodes:
+            fail("object '{}' not in the graph".format(args.focus))
+        focused = connected(nodes, require, autorequire, args.focus, args.direction)
+        keep = focused if keep is None else (keep & focused)
+        scope = "focus: {} ({})".format(args.focus, args.direction)
+    if keep is not None:
+        nodes, require, autorequire = restrict(nodes, require, autorequire, keep)
+
+    if args.level == "types":
+        dot_source = build_type_dot(nodes, require, autorequire, "LR")
+    else:
+        dot_source = build_object_dot(nodes, require, autorequire, "TB")
+
+    if args.dot:
+        print(dot_source)
+        return 0
+    if args.svg:
+        print(render_svg(dot_source))
+        return 0
+
+    edge_count = len({(b, a) for a, b in require} |
+                     {(b, a) for a, b in autorequire})
+    if args.level == "types":
+        types_present = {t for t in nodes.values()}
+        summary = "{} types, {} type dependencies".format(
+            len(types_present), edge_count)
+    else:
+        summary = "{} objects, {} dependencies".format(len(nodes), edge_count)
+    print(build_html(args.host, cache, dot_source, summary, scope))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

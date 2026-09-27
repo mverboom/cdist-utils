@@ -1,0 +1,57 @@
+{
+  "name": "cdist dependency graph",
+  "script_path": "sudo -u cdist -i cdist-graph",
+  "description": "Require/autorequire graph of a host's last cdist run, read from cache; nothing is configured.",
+  "group": "Cdist",
+  "output_format": "html_iframe",
+  "parameters": [
+    {
+      "name": "host",
+      "required": true,
+      "type": "list",
+      "description": "Host that has a cached cdist run.",
+      "values": {
+        "script": "sudo -u cdist -i cdist-graph --list-hosts",
+        "shell": false
+      },
+      "pass_as": "argument"
+    },
+    {
+      "name": "level",
+      "type": "list",
+      "default": "types",
+      "description": "types = one node per object type (overview); objects = one node per object (detail).",
+      "values": ["types", "objects"],
+      "param": "--level",
+      "pass_as": "argument"
+    },
+    {
+      "name": "types",
+      "type": "multiselect",
+      "description": "Limit to these object types. Empty = all types.",
+      "values": {
+        "script": "sudo -u cdist -i cdist-graph --list-types ${host}",
+        "shell": false
+      },
+      "multiselect_argument_type": "repeat_param_value",
+      "param": "--types",
+      "pass_as": "argument"
+    },
+    {
+      "name": "focus",
+      "type": "text",
+      "description": "Object to centre on, e.g. __file/etc/motd. Empty = whole graph.",
+      "param": "--focus",
+      "pass_as": "argument"
+    },
+    {
+      "name": "direction",
+      "type": "list",
+      "default": "both",
+      "description": "With a focus: up = its dependencies, down = its dependents.",
+      "values": ["both", "up", "down"],
+      "param": "--direction",
+      "pass_as": "argument"
+    }
+  ]
+}
