@@ -1,7 +1,7 @@
 {
   "name": "cdist dependency graph",
   "script_path": "sudo -u cdist -i cdist-graph",
-  "description": "Require/autorequire graph of a host's last cdist run, read from cache; nothing is configured.",
+  "description": "Dependency view of a host's last cdist run, read from cache; nothing is configured.",
   "group": "Cdist",
   "output_format": "html_iframe",
   "parameters": [
@@ -17,12 +17,12 @@
       "pass_as": "argument"
     },
     {
-      "name": "level",
+      "name": "view",
       "type": "list",
-      "default": "types",
-      "description": "types = one node per object type (overview); objects = one node per object (detail).",
-      "values": ["types", "objects"],
-      "param": "--level",
+      "default": "tree",
+      "description": "tree = layered levels, top level runs first/parallel; types = per-type network; objects = per-object network.",
+      "values": ["tree", "types", "objects"],
+      "param": "--view",
       "pass_as": "argument"
     },
     {
@@ -52,6 +52,13 @@
       "values": ["both", "up", "down"],
       "param": "--direction",
       "pass_as": "argument"
+    },
+    {
+      "name": "no collapse",
+      "type": "text",
+      "no_value": true,
+      "param": "--no-collapse",
+      "description": "Tree view: show every object, do not merge pass-through chains (usually far too large)."
     }
   ]
 }

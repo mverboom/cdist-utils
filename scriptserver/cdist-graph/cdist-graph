@@ -7,13 +7,17 @@ require/autorequire relationships, i.e. the execution-order dependencies
 cdist resolves between objects. No host is contacted and nothing is
 configured.
 
-Two levels are available:
+Three views are available:
 
-* types   - objects collapsed to their type (e.g. __file -> __package),
-            with the number of objects and edges per type. Compact, good
-            for an overview of the whole system.
+* tree    - the run as layered levels, top-down: level 0 holds objects that
+            nothing has to wait for (they can run in parallel), the next level
+            the objects that require something from level 0, and so on. Long
+            pass-through chains are collapsed into one node so the tree stays
+            readable.
+* types   - objects collapsed to their type (e.g. __file -> __package), with
+            the number of objects and edges per type. Compact network overview.
 * objects - every object as its own node, grouped in a cluster per type.
-            Detailed; meant to be narrowed with --focus or --types.
+            Detailed network; meant to be narrowed with --focus or --types.
 
 Default output is a self-contained HTML page (interactive pan/zoom) meant
 for script-server's html_iframe output format. --dot and --svg dump the
@@ -30,7 +34,7 @@ import shutil
 import signal
 import subprocess
 import sys
-from collections import defaultdict, deque
+from collections import Counter, defaultdict, deque
 
 # Behave like a normal Unix filter when output is piped to head etc.
 if hasattr(signal, "SIGPIPE"):
@@ -40,7 +44,10 @@ CACHE_DIR = os.path.join(os.path.expanduser("~"), ".cdist", "cache")
 
 NODE_ATTR = ('shape=box, style="rounded,filled", fillcolor="#f2f2f2", '
              'fontname="Helvetica", fontsize=10, margin="0.06,0.03"')
+TREE_NODE_ATTR = ('shape=box, style="rounded,filled", fillcolor="#f2f2f2", '
+                  'fontname="Helvetica", fontsize=10, margin="0.05,0.02"')
 EDGE_ATTR = 'fontname="Helvetica", fontsize=9, color="#333333", arrowsize=0.7'
+TREE_EDGE_ATTR = 'fontname="Helvetica", fontsize=8, color="#333333", arrowsize=0.6'
 
 
 def fail(message):
@@ -180,6 +187,142 @@ def edge_attrs(kinds):
     if "require" in kinds:
         return "style=solid"
     return "style=dashed, constraint=false"
+
+
+def compute_levels(nodes, edges):
+    """Longest-path level of every node: 0 = depends on nothing.
+
+    Nodes at the same level can run in parallel. Kahn's algorithm over the
+    DAG formed by the dependency edges.
+    """
+    deps = defaultdict(set)
+    for dependent, dependency in edges:
+        if dependency in nodes and dependent in nodes:
+            deps[dependent].add(dependency)
+    dependents = defaultdict(set)
+    for name in nodes:
+        for dependency in deps[name]:
+            dependents[dependency].add(name)
+
+    level = {name: 0 for name in nodes}
+    remaining = {name: len(deps[name]) for name in nodes}
+    queue = deque(name for name in nodes if remaining[name] == 0)
+    while queue:
+        name = queue.popleft()
+        for other in dependents[name]:
+            if level[name] + 1 > level[other]:
+                level[other] = level[name] + 1
+            remaining[other] -= 1
+            if remaining[other] == 0:
+                queue.append(other)
+    return level
+
+
+def collapse_chains(nodes, require):
+    """Merge runs of pass-through objects (one require in, one out) together.
+
+    This is what keeps the tree readable: the __le type alone produces a
+    ~200-object require chain (cert -> dir -> next cert -> ...).
+    """
+    deps = defaultdict(set)
+    dependents = defaultdict(set)
+    for dependent, dependency in require:
+        if dependent in nodes and dependency in nodes:
+            deps[dependent].add(dependency)
+            dependents[dependency].add(dependent)
+
+    parent = {name: name for name in nodes}
+
+    def find(name):
+        while parent[name] != name:
+            parent[name] = parent[parent[name]]
+            name = parent[name]
+        return name
+
+    def union(one, two):
+        root_one, root_two = find(one), find(two)
+        if root_one != root_two:
+            parent[root_two] = root_one
+
+    def linear(name):
+        return len(deps[name]) == 1 and len(dependents[name]) == 1
+
+    for name in nodes:
+        if linear(name):
+            only_dep = next(iter(deps[name]))
+            if linear(only_dep):
+                union(name, only_dep)
+
+    members = defaultdict(list)
+    for name in nodes:
+        members[find(name)].append(name)
+    return find, members
+
+
+def build_tree_dot(nodes, require, autorequire, collapse):
+    """Layered top-down view: one rank per level, chains collapsed."""
+    label = {}
+    tooltip = {}
+    if collapse:
+        find, members = collapse_chains(nodes, require)
+        collapsed_nodes = {}
+        for root, group in members.items():
+            collapsed_nodes[root] = nodes[group[0]]
+        require = [(find(a), find(b)) for a, b in require
+                   if a in nodes and b in nodes and find(a) != find(b)]
+        autorequire = [(find(a), find(b)) for a, b in autorequire
+                       if a in nodes and b in nodes and find(a) != find(b)]
+        for root, group in members.items():
+            if len(group) == 1:
+                name = group[0]
+                label[root] = node_label(name)
+                tooltip[root] = name
+            else:
+                types = Counter(m.split("/", 1)[0] for m in group)
+                parts = ", ".join("{} x{}".format(t, c)
+                                  for t, c in types.most_common(3))
+                label[root] = "{} chained: {}".format(len(group), parts)
+                shown = sorted(group)
+                tooltip[root] = ", ".join(shown[:40])
+                if len(shown) > 40:
+                    tooltip[root] += " ..."
+        nodes = collapsed_nodes
+
+    level = compute_levels(nodes, require + autorequire)
+    by_level = defaultdict(list)
+    for name in nodes:
+        by_level[level[name]].append(name)
+
+    kinds = defaultdict(set)
+    for dependent, dependency in require:
+        kinds[(dependency, dependent)].add("require")
+    for dependent, dependency in autorequire:
+        kinds[(dependency, dependent)].add("autorequire")
+
+    lines = [
+        "digraph cdist {",
+        "  rankdir=TB;",
+        "  compound=true;",
+        "  node [{}];".format(TREE_NODE_ATTR),
+        "  edge [{}];".format(TREE_EDGE_ATTR),
+    ]
+    for lvl in sorted(by_level):
+        lines.append("  { rank=same;")
+        names = sorted(by_level[lvl],
+                       key=lambda n: (label.get(n, node_label(n)), n))
+        for name in names:
+            lines.append("    {} [label={}, tooltip={}];".format(
+                dot_quote(name),
+                dot_quote(label.get(name, node_label(name))),
+                dot_quote(tooltip.get(name, name))))
+        lines.append("  }")
+
+    for (source, target), kind_set in sorted(kinds.items()):
+        lines.append("  {} -> {} [{}];".format(
+            dot_quote(source), dot_quote(target), edge_attrs(kind_set)))
+
+    lines.append("}")
+    return "\n".join(lines), len(nodes), (max(by_level) + 1 if by_level else 0)
 
 
 def build_object_dot(nodes, require, autorequire, rankdir):
@@ -392,8 +535,12 @@ def parse_args(argv):
         prog="cdist-graph",
         description="Visualise a host's cdist dependency graph from a cached run.")
     parser.add_argument("host", nargs="?", help="host name (fqdn / cache name)")
-    parser.add_argument("--level", choices=("types", "objects"), default="objects",
-                        help="types = collapse to type level (default objects)")
+    parser.add_argument("--view", choices=("tree", "types", "objects"),
+                        default="tree",
+                        help="tree = layered levels (default); types = per-type "
+                             "network; objects = per-object network")
+    parser.add_argument("--no-collapse", action="store_true",
+                        help="tree view: do not merge pass-through chains")
     parser.add_argument("--focus", metavar="OBJECT",
                         help="object to centre on, e.g. __file/etc/motd")
     parser.add_argument("--direction", choices=("both", "up", "down"),
@@ -453,10 +600,22 @@ def main(argv):
     if keep is not None:
         nodes, require, autorequire = restrict(nodes, require, autorequire, keep)
 
-    if args.level == "types":
+    edge_count = len({(b, a) for a, b in require} |
+                     {(b, a) for a, b in autorequire})
+
+    if args.view == "tree":
+        dot_source, shown, levels = build_tree_dot(
+            nodes, require, autorequire, not args.no_collapse)
+        detail = "uncollapsed" if args.no_collapse else "chains collapsed"
+        summary = "{} objects, {} dependencies, {} levels ({})".format(
+            shown, edge_count, levels, detail)
+    elif args.view == "types":
         dot_source = build_type_dot(nodes, require, autorequire, "LR")
+        summary = "{} types, {} type dependencies".format(
+            len({t for t in nodes.values()}), edge_count)
     else:
         dot_source = build_object_dot(nodes, require, autorequire, "TB")
+        summary = "{} objects, {} dependencies".format(len(nodes), edge_count)
 
     if args.dot:
         print(dot_source)
@@ -465,14 +624,6 @@ def main(argv):
         print(render_svg(dot_source))
         return 0
 
-    edge_count = len({(b, a) for a, b in require} |
-                     {(b, a) for a, b in autorequire})
-    if args.level == "types":
-        types_present = {t for t in nodes.values()}
-        summary = "{} types, {} type dependencies".format(
-            len(types_present), edge_count)
-    else:
-        summary = "{} objects, {} dependencies".format(len(nodes), edge_count)
     print(build_html(args.host, cache, dot_source, summary, scope))
     return 0
 
