@@ -435,6 +435,237 @@ def render_svg(dot_source):
     return result.stdout.decode("utf-8")
 
 
+# Geometry for the wrapped top-down tree (all in SVG user units / px).
+WRAP = {
+    "char_width": 6.2,
+    "pad": 8.0,
+    "node_height": 22.0,
+    "h_gap": 14.0,
+    "row_gap": 12.0,
+    "rank_gap": 46.0,
+    "left_margin": 150.0,
+    "right_margin": 30.0,
+    "top_margin": 12.0,
+    "bottom_margin": 12.0,
+    "label_max": 44,
+    "font": 11.0,
+}
+
+
+def truncate(text, limit):
+    """Shorten text to limit characters, adding an ellipsis."""
+    return text if len(text) <= limit else text[:limit - 1] + "\u2026"
+
+
+def order_ranks(ranks, edges, dependents_first):
+    """Order nodes within each rank to reduce edge crossings (barycentre).
+
+    ranks maps rank id -> list of nodes; edges are (above, below) pairs. The
+    leaf end is ordered first, then every closer rank by the mean normalised
+    position of the nodes it connects to.
+    """
+    forward = defaultdict(set)
+    backward = defaultdict(set)
+    for above, below in edges:
+        forward[above].add(below)
+        backward[below].add(above)
+
+    rank_ids = sorted(ranks)
+    sequence = list(reversed(rank_ids)) if dependents_first else rank_ids
+    reference = {}
+    for rank_id in sequence:
+        def barycentre(node):
+            neighbours = forward[node] if dependents_first else backward[node]
+            values = [reference[n] for n in neighbours if n in reference]
+            if not values:
+                return (1, 0.0)
+            return (0, sum(values) / len(values))
+
+        ranks[rank_id].sort(key=lambda n: (barycentre(n), n))
+        total = max(1, len(ranks[rank_id]))
+        for index, node in enumerate(ranks[rank_id]):
+            reference[node] = index / total
+    return ranks
+
+
+def collapse_and_label(nodes, require, autorequire):
+    """Collapse pass-through chains; return nodes, edges, labels, tooltips."""
+    find, members = collapse_chains(nodes, require)
+    collapsed = {root: nodes[group[0]] for root, group in members.items()}
+    require = [(find(a), find(b)) for a, b in require
+               if a in nodes and b in nodes and find(a) != find(b)]
+    autorequire = [(find(a), find(b)) for a, b in autorequire
+                   if a in nodes and b in nodes and find(a) != find(b)]
+    label = {}
+    tooltip = {}
+    for root, group in members.items():
+        if len(group) == 1:
+            label[root] = node_label(group[0])
+            tooltip[root] = group[0]
+        else:
+            types = Counter(m.split("/", 1)[0] for m in group)
+            kinds = ", ".join("{} x{}".format(t, c)
+                              for t, c in types.most_common(3))
+            label[root] = "{} chained: {}".format(len(group), kinds)
+            shown = sorted(group)
+            tooltip[root] = ", ".join(shown[:40])
+            if len(shown) > 40:
+                tooltip[root] += " ..."
+    return collapsed, require, autorequire, label, tooltip
+
+
+def build_wrapped_svg(nodes, require, autorequire, collapse, order, row_width):
+    """Top-down layered tree in which every wide rank wraps into several rows.
+
+    Returns (svg, node_count, level_count). Levels are real top-down rows, so
+    the vertical position follows the dependency order; wrapping keeps the
+    image from becoming thousands of points wide.
+    """
+    label = {}
+    tooltip = {}
+    if collapse:
+        nodes, require, autorequire, label, tooltip = collapse_and_label(
+            nodes, require, autorequire)
+
+    dependents_first = order == "dependents"
+    level = compute_levels(nodes, require + autorequire)
+    deepest = max(level.values()) if level else 0
+
+    rank = {}
+    for name in nodes:
+        rank[name] = (deepest - level[name]) if dependents_first else level[name]
+
+    ranks = defaultdict(list)
+    for name in nodes:
+        ranks[rank[name]].append(name)
+
+    kinds = defaultdict(set)
+    for dependent, dependency in require:
+        kinds[(dependent, dependency)].add("require")
+    for dependent, dependency in autorequire:
+        kinds[(dependent, dependency)].add("autorequire")
+
+    edges = []
+    for (dependent, dependency), kind_set in kinds.items():
+        if dependent not in nodes or dependency not in nodes:
+            continue
+        if dependents_first:
+            above, below = dependent, dependency
+        else:
+            above, below = dependency, dependent
+        if rank[above] >= rank[below]:
+            above, below = below, above
+        edges.append((above, below, kind_set))
+
+    order_ranks(ranks, [(a, b) for a, b, _ in edges], dependents_first)
+
+    text = {}
+    width = {}
+    for name in nodes:
+        short = truncate(label.get(name, node_label(name)), WRAP["label_max"])
+        text[name] = short
+        width[name] = max(54.0, 2 * WRAP["pad"] +
+                          len(short) * WRAP["char_width"])
+
+    # Wrap each rank into rows that fit the target row width.
+    rows_by_rank = {}
+    max_content = 1.0
+    for rank_id in sorted(ranks):
+        rows = []
+        current = []
+        current_width = 0.0
+        for name in ranks[rank_id]:
+            extra = width[name] if not current else WRAP["h_gap"] + width[name]
+            if current and current_width + extra > row_width:
+                rows.append(current)
+                current = []
+                current_width = 0.0
+                extra = width[name]
+            current.append(name)
+            current_width += extra
+        if current:
+            rows.append(current)
+        rows_by_rank[rank_id] = rows
+        for row in rows:
+            needed = sum(width[n] for n in row) + \
+                WRAP["h_gap"] * (len(row) - 1)
+            max_content = max(max_content, needed)
+
+    x0 = WRAP["left_margin"]
+    position = {}
+    bands = {}
+    y = WRAP["top_margin"]
+    for rank_id in sorted(ranks):
+        rank_top = y
+        for row in rows_by_rank[rank_id]:
+            needed = sum(width[n] for n in row) + \
+                WRAP["h_gap"] * (len(row) - 1)
+            x = x0 + (max_content - needed) / 2.0
+            for name in row:
+                position[name] = (x, y)
+                x += width[name] + WRAP["h_gap"]
+            y += WRAP["node_height"] + WRAP["row_gap"]
+        y -= WRAP["row_gap"]
+        bands[rank_id] = (rank_top, y)
+        y += WRAP["rank_gap"]
+
+    total_width = x0 + max_content + WRAP["right_margin"]
+    total_height = y - WRAP["rank_gap"] + WRAP["bottom_margin"]
+
+    parts = [
+        '<?xml version="1.0" encoding="UTF-8"?>',
+        '<svg xmlns="http://www.w3.org/2000/svg" width="{:.0f}" height="{:.0f}" '
+        'viewBox="0 0 {:.0f} {:.0f}">'.format(
+            total_width, total_height, total_width, total_height),
+        '<defs><marker id="cg-arrow" viewBox="0 0 10 10" refX="9" refY="5" '
+        'markerWidth="6" markerHeight="6" orient="auto">'
+        '<path d="M 0 0 L 10 5 L 0 10 z" fill="#999999"/></marker></defs>',
+    ]
+
+    # Level bands (labels + separators) behind everything else.
+    for rank_id in sorted(bands):
+        top, bottom = bands[rank_id]
+        normal = (deepest - rank_id) if dependents_first else rank_id
+        count = len(ranks[rank_id])
+        parts.append('<line x1="0" y1="{:.1f}" x2="{:.1f}" y2="{:.1f}" '
+                     'stroke="#dddddd"/>'.format(top, total_width, top))
+        parts.append('<text x="10" y="{:.1f}" font-family="Helvetica,Arial,'
+                     'sans-serif" font-size="11" fill="#666666">level {} '
+                     '({} object{})</text>'.format(
+                         top + 13, normal, count, "" if count == 1 else "s"))
+
+    for above, below, kind_set in edges:
+        ax = position[above][0] + width[above] / 2
+        ay = position[above][1] + WRAP["node_height"]
+        bx = position[below][0] + width[below] / 2
+        by = position[below][1]
+        if by <= ay:
+            continue
+        dy = max(16.0, (by - ay) * 0.4)
+        dash = "" if "require" in kind_set else ' stroke-dasharray="4 3"'
+        parts.append('<path d="M {:.1f} {:.1f} C {:.1f} {:.1f} {:.1f} {:.1f} '
+                     '{:.1f} {:.1f}" fill="none" stroke="#999999" '
+                     'stroke-width="1"{} marker-end="url(#cg-arrow)"/>'.format(
+                         ax, ay, ax, ay + dy, bx, by - dy, bx, by, dash))
+
+    for name in nodes:
+        x, y = position[name]
+        parts.append('<g><title>{}</title>'
+                     '<rect x="{:.1f}" y="{:.1f}" width="{:.1f}" '
+                     'height="{:.1f}" rx="4" fill="#f2f2f2" '
+                     'stroke="#999999"/>'
+                     '<text x="{:.1f}" y="{:.1f}" text-anchor="middle" '
+                     'font-family="Helvetica,Arial,sans-serif" font-size="{:.0f}" '
+                     'fill="#111111">{}</text></g>'.format(
+                         html.escape(tooltip.get(name, name)),
+                         x, y, width[name], WRAP["node_height"],
+                         x + width[name] / 2, y + WRAP["node_height"] / 2 + 4,
+                         WRAP["font"], html.escape(text[name])))
+
+    parts.append("</svg>")
+    return "\n".join(parts), len(nodes), len(bands)
+
+
 HTML_TEMPLATE = """<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -527,15 +758,15 @@ def human_age(seconds):
     return "{}s ago".format(seconds)
 
 
-def build_html(host, cache, dot_source, summary, scope):
-    """Wrap the rendered SVG in the interactive page."""
+def build_html(host, cache, svg, summary, scope):
+    """Wrap an already rendered SVG in the interactive page."""
     try:
         age = human_age(os.path.getmtime(os.path.join(cache, "object")))
     except OSError:
         age = "unknown"
     return HTML_TEMPLATE.format(
         host=html.escape(host),
-        svg=render_svg(dot_source),
+        svg=svg,
         summary=html.escape(summary),
         cache_age=html.escape(age),
         scope=html.escape(scope),
@@ -552,8 +783,14 @@ def parse_args(argv):
                         default="tree",
                         help="tree = layered levels (default); types = per-type "
                              "network; objects = per-object network")
+    parser.add_argument("--layout", choices=("wrapped", "graph"), default="wrapped",
+                        help="tree view: wrapped = custom top-down tree with "
+                             "wide levels wrapped (default); graph = Graphviz "
+                             "layered tree")
+    parser.add_argument("--row-width", type=int, default=2200,
+                        help="wrapped tree: target maximum width of a row in px")
     parser.add_argument("--orientation", choices=("lr", "tb"), default="lr",
-                        help="tree view: lr = levels left-to-right (default), "
+                        help="graph layout: lr = levels left-to-right (default), "
                              "tb = levels top-to-bottom")
     parser.add_argument("--order", choices=("dependents", "primitives"),
                         default="dependents",
@@ -624,6 +861,21 @@ def main(argv):
     edge_count = len({(b, a) for a, b in require} |
                      {(b, a) for a, b in autorequire})
 
+    if args.view == "tree" and args.layout == "wrapped":
+        svg, shown, levels = build_wrapped_svg(
+            nodes, require, autorequire, not args.no_collapse, args.order,
+            args.row_width)
+        detail = "uncollapsed" if args.no_collapse else "chains collapsed"
+        summary = "{} objects, {} dependencies, {} levels ({}, {} first)".format(
+            shown, edge_count, levels, detail, args.order)
+        if args.dot:
+            fail("--dot is not available for the wrapped tree; use --layout graph")
+        if args.svg:
+            print(svg)
+        else:
+            print(build_html(args.host, cache, svg, summary, scope))
+        return 0
+
     if args.view == "tree":
         dot_source, shown, levels = build_tree_dot(
             nodes, require, autorequire, not args.no_collapse,
@@ -646,7 +898,7 @@ def main(argv):
         print(render_svg(dot_source))
         return 0
 
-    print(build_html(args.host, cache, dot_source, summary, scope))
+    print(build_html(args.host, cache, render_svg(dot_source), summary, scope))
     return 0
 
 
