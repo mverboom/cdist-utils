@@ -24,7 +24,7 @@ made since then is not reflected until the host is run again (including a
 
 | View | What it shows |
 |---|---|
-| `tree` (default) | The run as layered levels, top-down. Level 0 holds objects that depend on nothing (they can run in parallel), the next level the objects that require something from level 0, and so on. |
+| `tree` (default) | The run as layered levels. Level 0 holds objects that depend on nothing (they can run in parallel), the next level the objects that require something from level 0, and so on. Levels run left-to-right by default (`--orientation tb` for top-to-bottom). |
 | `types` | Objects collapsed to their type, with the number of objects and edges per type. Compact whole-system network. |
 | `objects` | Every object as its own node, grouped in a dashed cluster per type. Detailed network. |
 
@@ -54,6 +54,7 @@ The **cdist dependency graph** runner exposes:
 |---|---|
 | `host` | host whose cache to read (populated from cached hosts) |
 | `view` | `tree` (default), `types` or `objects` |
+| `orientation` | tree view: `lr` (levels left-to-right, default) or `tb` (top-to-bottom) |
 | `types` | optional filter, one or more object types |
 | `focus` | optional object to centre on, e.g. `__file/etc/motd` |
 | `direction` | with `focus`: `up` (its dependencies), `down` (its dependents) or `both` |
@@ -82,7 +83,8 @@ Requires the `graphviz` package (`dot`) on the cdist server.
 
     cdist-graph --list-hosts
     cdist-graph --list-types proxy.lnw.verboom.net
-    cdist-graph proxy.lnw.verboom.net                     # layered tree
+    cdist-graph proxy.lnw.verboom.net                     # layered tree, left-to-right
+    cdist-graph proxy.lnw.verboom.net --orientation tb      # layered tree, top-to-bottom
     cdist-graph proxy.lnw.verboom.net --view types
     cdist-graph proxy.lnw.verboom.net --focus __le --direction down
     cdist-graph proxy.lnw.verboom.net --types __file --dot | dot -Tpng > g.png

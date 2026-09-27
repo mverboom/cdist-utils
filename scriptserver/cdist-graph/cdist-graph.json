@@ -26,6 +26,15 @@
       "pass_as": "argument"
     },
     {
+      "name": "orientation",
+      "type": "list",
+      "default": "lr",
+      "description": "Tree view: lr = levels left-to-right (default); tb = levels top-to-bottom.",
+      "values": ["lr", "tb"],
+      "param": "--orientation",
+      "pass_as": "argument"
+    },
+    {
       "name": "types",
       "type": "multiselect",
       "description": "Limit to these object types. Empty = all types.",
