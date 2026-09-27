@@ -259,7 +259,8 @@ def collapse_chains(nodes, require):
     return find, members
 
 
-def build_tree_dot(nodes, require, autorequire, collapse, rankdir="LR"):
+def build_tree_dot(nodes, require, autorequire, collapse, rankdir="LR",
+                   invert=False):
     """Layered top-down view: one rank per level, chains collapsed."""
     label = {}
     tooltip = {}
@@ -289,15 +290,27 @@ def build_tree_dot(nodes, require, autorequire, collapse, rankdir="LR"):
         nodes = collapsed_nodes
 
     level = compute_levels(nodes, require + autorequire)
+    if invert:
+        # Put the objects that depend on something at the top and the objects
+        # they depend on (ultimately the primitives) below: reverse the ranks
+        # and point the arrows from an object to what it depends on.
+        deepest = max(level.values()) if level else 0
+        level = {name: deepest - rank for name, rank in level.items()}
     by_level = defaultdict(list)
     for name in nodes:
         by_level[level[name]].append(name)
 
     kinds = defaultdict(set)
-    for dependent, dependency in require:
-        kinds[(dependency, dependent)].add("require")
-    for dependent, dependency in autorequire:
-        kinds[(dependency, dependent)].add("autorequire")
+    if invert:
+        for dependent, dependency in require:
+            kinds[(dependent, dependency)].add("require")
+        for dependent, dependency in autorequire:
+            kinds[(dependent, dependency)].add("autorequire")
+    else:
+        for dependent, dependency in require:
+            kinds[(dependency, dependent)].add("require")
+        for dependent, dependency in autorequire:
+            kinds[(dependency, dependent)].add("autorequire")
 
     lines = [
         "digraph cdist {",
@@ -542,6 +555,11 @@ def parse_args(argv):
     parser.add_argument("--orientation", choices=("lr", "tb"), default="lr",
                         help="tree view: lr = levels left-to-right (default), "
                              "tb = levels top-to-bottom")
+    parser.add_argument("--order", choices=("dependents", "primitives"),
+                        default="dependents",
+                        help="tree view: dependents = objects that depend on "
+                             "something first (default); primitives = objects "
+                             "that depend on nothing first")
     parser.add_argument("--no-collapse", action="store_true",
                         help="tree view: do not merge pass-through chains")
     parser.add_argument("--focus", metavar="OBJECT",
@@ -609,10 +627,10 @@ def main(argv):
     if args.view == "tree":
         dot_source, shown, levels = build_tree_dot(
             nodes, require, autorequire, not args.no_collapse,
-            args.orientation.upper())
+            args.orientation.upper(), args.order == "dependents")
         detail = "uncollapsed" if args.no_collapse else "chains collapsed"
-        summary = "{} objects, {} dependencies, {} levels ({}, {})".format(
-            shown, edge_count, levels, detail, args.orientation)
+        summary = "{} objects, {} dependencies, {} levels ({}, {}, {} first)".format(
+            shown, edge_count, levels, detail, args.orientation, args.order)
     elif args.view == "types":
         dot_source = build_type_dot(nodes, require, autorequire, "LR")
         summary = "{} types, {} type dependencies".format(

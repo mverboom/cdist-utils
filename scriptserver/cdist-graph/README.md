@@ -24,18 +24,24 @@ made since then is not reflected until the host is run again (including a
 
 | View | What it shows |
 |---|---|
-| `tree` (default) | The run as layered levels. Level 0 holds objects that depend on nothing (they can run in parallel), the next level the objects that require something from level 0, and so on. Levels run left-to-right by default (`--orientation tb` for top-to-bottom). |
+| `tree` (default) | The run as layered levels, rendered `lr` (left-to-right) by default. By default the objects that depend on something come first and the primitives (objects that depend on nothing) last; `--order primitives` reverses that. |
 | `types` | Objects collapsed to their type, with the number of objects and edges per type. Compact whole-system network. |
 | `objects` | Every object as its own node, grouped in a dashed cluster per type. Detailed network. |
 
-In all views arrows point from a dependency to the object that requires it
-(execution order), `require` edges are solid and `autorequire` dashed (line
-style, not colour, so it stays readable for colour-blind users).
+Arrow direction depends on the tree order: with the default `--order
+dependents` an arrow points from an object to what it depends on (read it as
+"needs"); with `--order primitives` it points from a dependency to the object
+that requires it (execution order). In the `types` and `objects` views arrows
+always point dependency → dependent. `require` edges are solid and
+`autorequire` dashed (line style, not colour, so it stays readable for
+colour-blind users).
 
 ### Why the tree view collapses chains
 
 The levels are the longest-path rank over `require` **and** `autorequire`;
-nodes sharing a level can run in parallel. A faithful object-level tree is
+nodes sharing a level can run in parallel. `--order dependents` (the default)
+renders those levels with the most-dependent objects first, `primitives` with
+the dependency-free objects first. A faithful object-level tree is
 often unusable: the `__le` type alone produces a ~200-object pass-through
 require chain (cert → directory → next cert → …), so the tree would be ~200
 levels of single nodes. The tree view therefore merges runs of pass-through
@@ -55,6 +61,7 @@ The **cdist dependency graph** runner exposes:
 | `host` | host whose cache to read (populated from cached hosts) |
 | `view` | `tree` (default), `types` or `objects` |
 | `orientation` | tree view: `lr` (levels left-to-right, default) or `tb` (top-to-bottom) |
+| `order` | tree view: `dependents` (objects with dependencies first, default) or `primitives` (objects with no dependencies first) |
 | `types` | optional filter, one or more object types |
 | `focus` | optional object to centre on, e.g. `__file/etc/motd` |
 | `direction` | with `focus`: `up` (its dependencies), `down` (its dependents) or `both` |
@@ -83,7 +90,8 @@ Requires the `graphviz` package (`dot`) on the cdist server.
 
     cdist-graph --list-hosts
     cdist-graph --list-types proxy.lnw.verboom.net
-    cdist-graph proxy.lnw.verboom.net                     # layered tree, left-to-right
+    cdist-graph proxy.lnw.verboom.net                     # layered tree, left-to-right, dependents first
+    cdist-graph proxy.lnw.verboom.net --order primitives    # primitives first (run order)
     cdist-graph proxy.lnw.verboom.net --orientation tb      # layered tree, top-to-bottom
     cdist-graph proxy.lnw.verboom.net --view types
     cdist-graph proxy.lnw.verboom.net --focus __le --direction down

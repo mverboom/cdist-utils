@@ -63,6 +63,15 @@
       "pass_as": "argument"
     },
     {
+      "name": "order",
+      "type": "list",
+      "default": "dependents",
+      "description": "Tree view: dependents = objects that depend on something first (default); primitives = objects that depend on nothing first.",
+      "values": ["dependents", "primitives"],
+      "param": "--order",
+      "pass_as": "argument"
+    },
+    {
       "name": "no collapse",
       "type": "text",
       "no_value": true,
